@@ -1,0 +1,62 @@
+name: "Nibe-Huawei Bridge"
+description: "Prenáša dáta z Huawei FV/batérie do Nibe S1255 cez Modbus (cez HA)"
+version: "1.0.0"
+slug: "nibe_huawei_bridge"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+
+options:
+  update_interval: 30
+  log_level: "info"
+  nibe_hub: "nibe"
+  sensors:
+    pv_power: "sensor.huawei_pv_power"
+    battery_soc: "sensor.huawei_battery_soc"
+    battery_power: "sensor.huawei_battery_power"
+    grid_power: "sensor.huawei_grid_power"
+  # Registre pre zápis externých energetických dát do Nibe
+  # POZOR: Overte tieto hodnoty v MODBUS40 dokumentácii pre váš firmware!
+  nibe_external_registers:
+    enabled: false
+    pv_power: 43086
+    battery_power: 43087
+    battery_soc: 43088
+    grid_power: 43084
+  # Surplus logika - riadenie TÚV a heating offsetu podľa prebytku
+  surplus_control:
+    enabled: true
+    # Prahové hodnoty v W
+    tuv_normal_w: 1000
+    tuv_luxury_w: 3000
+    heating_offset_w: 5000
+    heating_offset_value: 3
+    # Počet cyklov pod prahom pred znížením módu (hysteréza)
+    hysteresis_cycles: 3
+
+schema:
+  update_interval: int
+  log_level: "list(debug|info|warning|error)"
+  nibe_hub: str
+  sensors:
+    pv_power: str
+    battery_soc: str
+    battery_power: str
+    grid_power: str
+  nibe_external_registers:
+    enabled: bool
+    pv_power: int
+    battery_power: int
+    battery_soc: int
+    grid_power: int
+  surplus_control:
+    enabled: bool
+    tuv_normal_w: int
+    tuv_luxury_w: int
+    heating_offset_w: int
+    heating_offset_value: int
+    hysteresis_cycles: int
