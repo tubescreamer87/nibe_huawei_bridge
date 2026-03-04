@@ -84,6 +84,7 @@ class HAClient:
     ) -> Optional[float]:
         """Vráti numerický stav entity alebo None ak nie je dostupná."""
         url = f"{HA_BASE_URL}/api/states/{entity_id}"
+        raw = None
         try:
             async with session.get(url, headers=self._headers) as resp:
                 if resp.status != 200:
@@ -286,6 +287,7 @@ class NibeHuaweiBridge:
                 return
             target_hw = 0               # ECO
             target_offset = 0
+            self._state.below_count = 0
 
         # Zapíš iba ak sa stav zmenil
         if target_hw != self._state.hw_mode:
