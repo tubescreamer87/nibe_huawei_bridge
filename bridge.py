@@ -2,14 +2,14 @@
 """
 Nibe-Huawei Bridge – Home Assistant Addon
 ==========================================
-Číta stav Huawei FV invertera a batérie z HA a zapisuje dáta do Nibe S1255
-cez HA Modbus integráciu.
+Emuluje Huawei SUN2000 inverter cez Modbus TCP.
+Nibe S1255 sa pripojí priamo ako Modbus master a číta PV/batériové/sieťové dáta.
 
 Dva režimy (môžu bežať súbežne):
-  1. external_registers – zapisuje surové W/% hodnoty do Nibe MODBUS40 registrov
-     pre externé energetické dáta (Nibe potom sama riadi podľa prebytku)
+  1. modbus_server – embedded Modbus TCP slave server mimiking SUN2000
+     (Nibe číta registre priamo, bez HA Modbus integrácie)
   2. surplus_control – vypočítava prebytok a priamo nastavuje HW comfort mode
-     a heating offset (fallback / doplnok k režimu 1)
+     a heating offset cez HA modbus.write_register (fallback)
 """
 
 import asyncio
@@ -17,8 +17,9 @@ import aiohttp
 import json
 import logging
 import os
+import struct
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -35,19 +36,24 @@ LOG_LEVELS = {
 log = logging.getLogger("nibe-huawei")
 
 # ---------------------------------------------------------------------------
-# Nibe MODBUS40 register constants (S1255)
-# Zdroj: Nibe MODBUS40 ModbusManager register list
-# POZOR: Registre pre externé energetické dáta (43084–43088) OVERTE v
-#        dokumentácii pre váš konkrétny firmware MODBUS40!
+# Register constants
 # ---------------------------------------------------------------------------
 
+# Huawei SUN2000 proprietary Modbus registers (0-based)
+HUAWEI_REG_PV_POWER   = 32080  # INT32, 2 regs, W (active AC output)
+HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import)
+HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % * 10
+HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge)
+
+# SunSpec magic – populated so Nibe finds either proprietary or SunSpec regs
+SUNSPEC_BASE          = 40000  # "SunS" identifier (2 regs)
+SUNSPEC_MODEL1_BASE   = 40002  # Model 1 (Common), length 66
+SUNSPEC_MODEL103_BASE = 40070  # Model 103 (Three-phase inverter), length 50
+SUNSPEC_M103_W        = 40083  # Model 103 AC Power (INT16, 1 reg, W with scale)
+
+# Nibe registers used by surplus_control (unchanged)
 REG_HW_COMFORT_MODE = 47041   # 0=ECO, 1=Normal, 2=Luxury
-REG_HEATING_OFFSET  = 47276   # Heating offset climate system (-10 až +10)
-# Registre pre externé PV/batériové dáta – konfigurovateľné, defaulty nižšie:
-REG_EXT_GRID_POWER    = 43084
-REG_EXT_PV_POWER      = 43086
-REG_EXT_BATT_POWER    = 43087
-REG_EXT_BATT_SOC      = 43088
+REG_HEATING_OFFSET  = 47276   # Heating offset climate system (-10 to +10)
 
 # ---------------------------------------------------------------------------
 # Konfigurácia
@@ -67,6 +73,107 @@ def load_options() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Modbus register helpers
+# ---------------------------------------------------------------------------
+
+def _pack_int32(value: int) -> list[int]:
+    """Pack signed int32 into two big-endian 16-bit Modbus words."""
+    clamped = max(-(2**31), min(2**31 - 1, value))
+    raw = struct.pack(">i", clamped)
+    return [(raw[0] << 8) | raw[1], (raw[2] << 8) | raw[3]]
+
+
+def _pack_uint16(value: int) -> list[int]:
+    """Pack unsigned int into one 16-bit Modbus word."""
+    return [max(0, min(0xFFFF, value))]
+
+
+# ---------------------------------------------------------------------------
+# RegisterBank – wraps pymodbus slave context for SUN2000 register layout
+# ---------------------------------------------------------------------------
+
+def build_modbus_context(unit_id: int):
+    """
+    Build a ModbusServerContext with a sparse data block covering all known
+    SUN2000 and SunSpec register addresses.  zero_mode=True so that register
+    address N maps directly to data block index N (Huawei docs use 0-based).
+    """
+    from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
+    from pymodbus.datastore.store import ModbusSparseDataBlock
+
+    # Pre-populate all known addresses to 0
+    initial: dict[int, int] = {}
+    for addr in range(32080, 32082):   # PV power (INT32)
+        initial[addr] = 0
+    for addr in range(37113, 37115):   # Grid power (INT32)
+        initial[addr] = 0
+    initial[37760] = 0                  # Battery SoC (UINT16)
+    for addr in range(37765, 37767):   # Battery power (INT32)
+        initial[addr] = 0
+    for addr in range(40000, 40124):   # SunSpec header + model 1 + model 103
+        initial[addr] = 0
+
+    block = ModbusSparseDataBlock(initial)
+    slave = ModbusSlaveContext(hr=block, zero_mode=True)
+    ctx = ModbusServerContext(slaves={unit_id: slave}, single=False)
+
+    # Seed SunSpec header
+    _write_ctx(ctx, unit_id, 40000, [0x5375, 0x6E53])   # "SunS"
+    _write_ctx(ctx, unit_id, 40002, [1, 66])              # Model 1, len=66
+    _write_ctx(ctx, unit_id, 40070, [103, 50])            # Model 103, len=50
+    _write_ctx(ctx, unit_id, 40122, [0xFFFF, 0])          # End marker
+
+    return ctx
+
+
+def _write_ctx(ctx, unit_id: int, addr: int, values: list[int]):
+    """Write a list of 16-bit words into the server context at addr."""
+    ctx[unit_id].setValues(3, addr, values)
+
+
+class RegisterBank:
+    """Keeps the pymodbus server context up-to-date with latest sensor values."""
+
+    def __init__(self, ctx, unit_id: int):
+        self._ctx = ctx
+        self._uid = unit_id
+
+    def _set_int32(self, addr: int, val: int):
+        _write_ctx(self._ctx, self._uid, addr, _pack_int32(val))
+
+    def _set_uint16(self, addr: int, val: int):
+        _write_ctx(self._ctx, self._uid, addr, _pack_uint16(val))
+
+    def update(
+        self,
+        pv_w: Optional[float],
+        batt_w: Optional[float],
+        soc_pct: Optional[float],
+        grid_w: Optional[float],
+    ):
+        """Write latest values into Modbus registers.  None = keep previous."""
+        if pv_w is not None:
+            v = int(round(pv_w))
+            self._set_int32(HUAWEI_REG_PV_POWER, v)
+            # SunSpec M103 AC Power (INT16, W, scale factor 0 at 40091)
+            self._set_uint16(SUNSPEC_M103_W, v & 0xFFFF)
+
+        if grid_w is not None:
+            self._set_int32(HUAWEI_REG_GRID_POWER, int(round(grid_w)))
+
+        if soc_pct is not None:
+            # SUN2000 stores SoC as % * 10
+            self._set_uint16(HUAWEI_REG_BATT_SOC, int(round(soc_pct * 10)))
+
+        if batt_w is not None:
+            self._set_int32(HUAWEI_REG_BATT_POWER, int(round(batt_w)))
+
+        log.debug(
+            f"RegisterBank updated: pv={pv_w} grid={grid_w} soc={soc_pct} batt={batt_w}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # HA klient
 # ---------------------------------------------------------------------------
 
@@ -82,7 +189,6 @@ class HAClient:
     async def get_state(
         self, session: aiohttp.ClientSession, entity_id: str
     ) -> Optional[float]:
-        """Vráti numerický stav entity alebo None ak nie je dostupná."""
         url = f"{HA_BASE_URL}/api/states/{entity_id}"
         raw = None
         try:
@@ -131,7 +237,6 @@ class HAClient:
         address: int,
         value: int,
     ) -> bool:
-        """Zapíše 16-bit register do HA Modbus hubu."""
         log.debug(f"Modbus write → hub={hub} addr={address} val={value}")
         return await self.call_service(
             session,
@@ -158,7 +263,7 @@ class SurplusState:
 
 class NibeHuaweiBridge:
 
-    def __init__(self, opts: dict):
+    def __init__(self, opts: dict, bank: Optional["RegisterBank"] = None):
         token = os.environ.get("SUPERVISOR_TOKEN", "")
         if not token:
             log.error("SUPERVISOR_TOKEN nie je nastavený – addon musí bežať v HA Supervisor")
@@ -166,24 +271,18 @@ class NibeHuaweiBridge:
 
         self._ha = HAClient(token)
         self._state = SurplusState()
+        self._bank = bank
         self._interval: int = opts.get("update_interval", 30)
-        self._hub: str = opts.get("nibe_hub", "nibe")
 
         s = opts.get("sensors", {})
-        self._sensor_pv   = s.get("pv_power",      "sensor.huawei_pv_power")
-        self._sensor_soc  = s.get("battery_soc",   "sensor.huawei_battery_soc")
-        self._sensor_batt = s.get("battery_power", "sensor.huawei_battery_power")
-        self._sensor_grid = s.get("grid_power",    "sensor.huawei_grid_power")
-
-        er = opts.get("nibe_external_registers", {})
-        self._ext_enabled      = er.get("enabled", False)
-        self._reg_pv           = er.get("pv_power",      REG_EXT_PV_POWER)
-        self._reg_batt_power   = er.get("battery_power", REG_EXT_BATT_POWER)
-        self._reg_batt_soc     = er.get("battery_soc",   REG_EXT_BATT_SOC)
-        self._reg_grid         = er.get("grid_power",    REG_EXT_GRID_POWER)
+        self._sensor_pv   = s.get("pv_power",      "sensor.emma_pv_output_power")
+        self._sensor_soc  = s.get("battery_soc",   "sensor.emma_state_of_capacity")
+        self._sensor_batt = s.get("battery_power", "sensor.emma_battery_charge_discharge_power")
+        self._sensor_grid = s.get("grid_power",    "sensor.emma_feed_in_power")
 
         sc = opts.get("surplus_control", {})
-        self._sc_enabled      = sc.get("enabled", True)
+        self._sc_enabled      = sc.get("enabled", False)
+        self._hub             = sc.get("nibe_hub", "nibe")
         self._tuv_normal_w    = sc.get("tuv_normal_w",      1000)
         self._tuv_luxury_w    = sc.get("tuv_luxury_w",      3000)
         self._heat_thresh_w   = sc.get("heating_offset_w",  5000)
@@ -209,47 +308,10 @@ class NibeHuaweiBridge:
 
     @staticmethod
     def _calc_surplus(data: dict) -> float:
-        """
-        Prebytok = energia ktorú exportujeme do siete.
-        Huawei grid_power: kladná = import zo siete, záporná = export do siete.
-        Prebytok = -grid_power (keď exportujeme, je to pozitívne číslo).
-        """
         grid = data.get("grid")
         if grid is not None:
             return -grid
-        # Fallback keď nemáme grid sensor
-        pv = data.get("pv") or 0.0
-        return pv
-
-    # ------------------------------------------------------------------
-    # Zápis externých energetických registrov do Nibe
-    # ------------------------------------------------------------------
-
-    async def _write_external_registers(
-        self, session: aiohttp.ClientSession, data: dict
-    ):
-        """
-        Zapisuje surové FV/batériové dáta do Nibe MODBUS40 externých registrov.
-        Nibe potom sama optimalizuje spotrebu podľa dostupnej energie.
-
-        ⚠️  Registre musia byť overené v MODBUS40 dokumentácii pre váš firmware!
-        """
-        # Hodnoty škálujeme na celé čísla (Nibe registre sú 16-bit signed)
-        writes: list[tuple[int, Optional[float]]] = [
-            (self._reg_pv,         data.get("pv")),
-            (self._reg_batt_power, data.get("batt")),
-            (self._reg_batt_soc,   data.get("soc")),
-            (self._reg_grid,       data.get("grid")),
-        ]
-
-        for address, raw_value in writes:
-            if raw_value is None:
-                continue
-            int_val = int(round(raw_value))
-            # 16-bit signed: záporné čísla cez two's complement
-            if int_val < 0:
-                int_val = int_val & 0xFFFF
-            await self._ha.write_modbus_register(session, self._hub, address, int_val)
+        return data.get("pv") or 0.0
 
     # ------------------------------------------------------------------
     # Surplus riadenie (HW comfort mode + heating offset)
@@ -258,26 +320,19 @@ class NibeHuaweiBridge:
     async def _update_surplus_control(
         self, session: aiohttp.ClientSession, surplus: float
     ):
-        """
-        Priame riadenie Nibe podľa prebytku:
-          - TÚV comfort mode: ECO / Normal / Luxury
-          - Heating offset: zvýšenie teploty pri veľkom prebytku
-        """
-        # Určíme cieľový stav
         if surplus >= self._heat_thresh_w:
-            target_hw = 2               # Luxury
+            target_hw = 2
             target_offset = self._heat_offset_val
             self._state.below_count = 0
         elif surplus >= self._tuv_luxury_w:
-            target_hw = 2               # Luxury
+            target_hw = 2
             target_offset = 0
             self._state.below_count = 0
         elif surplus >= self._tuv_normal_w:
-            target_hw = 1               # Normal
+            target_hw = 1
             target_offset = 0
             self._state.below_count = 0
         else:
-            # Pod prahom – hysteréza pred znížením
             self._state.below_count += 1
             if self._state.below_count < self._hysteresis:
                 log.debug(
@@ -285,11 +340,10 @@ class NibeHuaweiBridge:
                     f"hysteréza {self._state.below_count}/{self._hysteresis}"
                 )
                 return
-            target_hw = 0               # ECO
+            target_hw = 0
             target_offset = 0
             self._state.below_count = 0
 
-        # Zapíš iba ak sa stav zmenil
         if target_hw != self._state.hw_mode:
             mode_names = {0: "ECO", 1: "Normal", 2: "Luxury"}
             log.info(
@@ -320,10 +374,10 @@ class NibeHuaweiBridge:
         log.info("=" * 60)
         log.info("Nibe-Huawei Bridge štartuje")
         log.info(f"  Interval:           {self._interval}s")
-        log.info(f"  Nibe Modbus hub:    {self._hub}")
-        log.info(f"  Externé registre:   {'zapnuté' if self._ext_enabled else 'vypnuté'}")
+        log.info(f"  Modbus server:      {'zapnutý' if self._bank else 'vypnutý'}")
         log.info(f"  Surplus control:    {'zapnuté' if self._sc_enabled else 'vypnuté'}")
         if self._sc_enabled:
+            log.info(f"    Nibe hub:         {self._hub}")
             log.info(f"    TÚV Normal od:    {self._tuv_normal_w}W")
             log.info(f"    TÚV Luxury od:    {self._tuv_luxury_w}W")
             log.info(f"    Heating offset od:{self._heat_thresh_w}W (+{self._heat_offset_val})")
@@ -349,8 +403,8 @@ class NibeHuaweiBridge:
                         f"Prebytok: {surplus:.0f}W"
                     )
 
-                    if self._ext_enabled:
-                        await self._write_external_registers(session, data)
+                    if self._bank is not None:
+                        self._bank.update(pv, batt, soc, grid)
 
                     if self._sc_enabled:
                         await self._update_surplus_control(session, surplus)
@@ -359,6 +413,17 @@ class NibeHuaweiBridge:
                     log.error(f"Neočakávaná chyba v cykle: {e}", exc_info=True)
 
                 await asyncio.sleep(self._interval)
+
+
+# ---------------------------------------------------------------------------
+# Async entry point
+# ---------------------------------------------------------------------------
+
+async def async_main(server, bridge: NibeHuaweiBridge):
+    tasks = [bridge.run()]
+    if server is not None:
+        tasks.append(server.serve_forever())
+    await asyncio.gather(*tasks)
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +441,43 @@ def main():
         stream=sys.stdout,
     )
 
-    bridge = NibeHuaweiBridge(opts)
-    asyncio.run(bridge.run())
+    server = None
+    bank = None
+
+    ms = opts.get("modbus_server", {})
+    if ms.get("enabled", True):
+        from pymodbus.server import ModbusTcpServer
+        from pymodbus.device import ModbusDeviceIdentification
+
+        unit_id = ms.get("unit_id", 1)
+        host    = ms.get("host", "0.0.0.0")
+        port    = ms.get("port", 5020)
+
+        ctx = build_modbus_context(unit_id)
+        bank = RegisterBank(ctx, unit_id)
+
+        identity = ModbusDeviceIdentification()
+        identity.VendorName  = "Huawei"
+        identity.ProductCode = "SUN2000"
+        identity.ModelName   = "SUN2000-10KTL"
+        identity.MajorMinorRevision = "V200R002"
+
+        try:
+            server = ModbusTcpServer(
+                context=ctx,
+                identity=identity,
+                address=(host, port),
+            )
+            log.info(f"Modbus TCP server na {host}:{port} (unit_id={unit_id})")
+        except PermissionError:
+            log.error(
+                f"Nepodarilo sa otvoriť port {port} – porty < 1024 vyžadujú root. "
+                "Zmeňte modbus_server.port na 5020 alebo spustite ako root."
+            )
+            sys.exit(1)
+
+    bridge = NibeHuaweiBridge(opts, bank=bank)
+    asyncio.run(async_main(server, bridge))
 
 
 if __name__ == "__main__":

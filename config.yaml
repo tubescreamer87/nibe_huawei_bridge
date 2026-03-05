@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
-description: "Prenáša dáta z Huawei FV/batérie do Nibe S1255 cez Modbus (cez HA)"
-version: "1.0.0"
+description: "Emuluje Huawei SUN2000 cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
+version: "2.0.0"
 slug: "nibe_huawei_bridge"
 init: false
 arch:
@@ -10,26 +10,29 @@ arch:
   - armv7
   - i386
 
+ports:
+  5020/tcp: 5020
+ports_description:
+  5020/tcp: "Modbus TCP (SUN2000 emulácia pre Nibe S1255)"
+
 options:
   update_interval: 30
   log_level: "info"
-  nibe_hub: "nibe"
   sensors:
-    pv_power: "sensor.huawei_pv_power"
-    battery_soc: "sensor.huawei_battery_soc"
-    battery_power: "sensor.huawei_battery_power"
-    grid_power: "sensor.huawei_grid_power"
-  # Registre pre zápis externých energetických dát do Nibe
-  # POZOR: Overte tieto hodnoty v MODBUS40 dokumentácii pre váš firmware!
-  nibe_external_registers:
-    enabled: false
-    pv_power: 43086
-    battery_power: 43087
-    battery_soc: 43088
-    grid_power: 43084
-  # Surplus logika - riadenie TÚV a heating offsetu podľa prebytku
-  surplus_control:
+    pv_power: "sensor.emma_pv_output_power"
+    battery_soc: "sensor.emma_state_of_capacity"
+    battery_power: "sensor.emma_battery_charge_discharge_power"
+    grid_power: "sensor.emma_feed_in_power"
+  # Modbus TCP server – Nibe S1255 sa pripojí ako master a číta SUN2000 registre
+  modbus_server:
     enabled: true
+    port: 5020          # 502 vyžaduje root; použite 5020 ako default
+    host: "0.0.0.0"
+    unit_id: 1
+  # Surplus logika - riadenie TÚV a heating offsetu podľa prebytku (fallback)
+  surplus_control:
+    enabled: false
+    nibe_hub: "nibe"
     # Prahové hodnoty v W
     tuv_normal_w: 1000
     tuv_luxury_w: 3000
@@ -41,20 +44,19 @@ options:
 schema:
   update_interval: int
   log_level: "list(debug|info|warning|error)"
-  nibe_hub: str
   sensors:
     pv_power: str
     battery_soc: str
     battery_power: str
     grid_power: str
-  nibe_external_registers:
+  modbus_server:
     enabled: bool
-    pv_power: int
-    battery_power: int
-    battery_soc: int
-    grid_power: int
+    port: int
+    host: str
+    unit_id: int
   surplus_control:
     enabled: bool
+    nibe_hub: str
     tuv_normal_w: int
     tuv_luxury_w: int
     heating_offset_w: int
