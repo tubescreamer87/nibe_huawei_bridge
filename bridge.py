@@ -419,9 +419,19 @@ class NibeHuaweiBridge:
 # Async entry point
 # ---------------------------------------------------------------------------
 
-async def async_main(server, bridge: NibeHuaweiBridge):
+async def async_main(server_kwargs: Optional[dict], bridge: NibeHuaweiBridge):
     tasks = [bridge.run()]
-    if server is not None:
+    if server_kwargs is not None:
+        from pymodbus.server import ModbusTcpServer
+        try:
+            server = ModbusTcpServer(**server_kwargs)
+        except PermissionError:
+            port = server_kwargs.get("address", ("", 0))[1]
+            log.error(
+                f"Nepodarilo sa otvoriť port {port} – porty < 1024 vyžadujú root. "
+                "Zmeňte modbus_server.port na 5020 alebo spustite ako root."
+            )
+            sys.exit(1)
         tasks.append(server.serve_forever())
     await asyncio.gather(*tasks)
 
@@ -441,12 +451,11 @@ def main():
         stream=sys.stdout,
     )
 
-    server = None
+    server_kwargs = None
     bank = None
 
     ms = opts.get("modbus_server", {})
     if ms.get("enabled", True):
-        from pymodbus.server import ModbusTcpServer
         from pymodbus.device import ModbusDeviceIdentification
 
         unit_id = ms.get("unit_id", 1)
@@ -462,22 +471,11 @@ def main():
         identity.ModelName   = "SUN2000-10KTL"
         identity.MajorMinorRevision = "V200R002"
 
-        try:
-            server = ModbusTcpServer(
-                context=ctx,
-                identity=identity,
-                address=(host, port),
-            )
-            log.info(f"Modbus TCP server na {host}:{port} (unit_id={unit_id})")
-        except PermissionError:
-            log.error(
-                f"Nepodarilo sa otvoriť port {port} – porty < 1024 vyžadujú root. "
-                "Zmeňte modbus_server.port na 5020 alebo spustite ako root."
-            )
-            sys.exit(1)
+        server_kwargs = {"context": ctx, "identity": identity, "address": (host, port)}
+        log.info(f"Modbus TCP server na {host}:{port} (unit_id={unit_id})")
 
     bridge = NibeHuaweiBridge(opts, bank=bank)
-    asyncio.run(async_main(server, bridge))
+    asyncio.run(async_main(server_kwargs, bridge))
 
 
 if __name__ == "__main__":
