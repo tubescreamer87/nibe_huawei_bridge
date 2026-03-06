@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
 description: "Emuluje Huawei SUN2000 cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
-version: "2.0.0"
+version: "2.0.6"
 slug: "nibe_huawei_bridge"
 init: false
 hassio_api: true

@@ -40,10 +40,13 @@ log = logging.getLogger("nibe-huawei")
 # ---------------------------------------------------------------------------
 
 # Huawei SUN2000 proprietary Modbus registers (0-based)
-HUAWEI_REG_PV_POWER   = 32080  # INT32, 2 regs, W (active AC output)
-HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import)
-HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % * 10
-HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge)
+HUAWEI_REG_PV_POWER   = 32080  # INT32, 2 regs, W (active AC output)  [MBSA V3]
+HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import) [MBSA V3]
+HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % * 10               [MBSA V3]
+HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge) [MBSA V3]
+
+# Older SUN2000 register map (MBSA V1/V2) — what Nibe S1255 actually polls
+NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — active power output [MBSA V1]
 
 # SunSpec magic – populated so Nibe finds either proprietary or SunSpec regs
 SUNSPEC_BASE          = 40000  # "SunS" identifier (2 regs)
@@ -106,17 +109,62 @@ def build_modbus_context(unit_id: int):
         def validate(self, address, count=1):
             return True
         def getValues(self, address, count=1):
+            unknown = [address + i for i in range(count) if (address + i) not in self.values]
+            if unknown:
+                log.info(f"Nibe polling unknown reg(s): addr={address} count={count} unknown={unknown}")
+            else:
+                result = [self.values.get(address + i, 0) for i in range(count)]
+                log.debug(f"Nibe polling known reg(s): addr={address} count={count} values={result}")
             return [self.values.get(address + i, 0) for i in range(count)]
+
+    def _str_to_regs(s: str, num_regs: int) -> list[int]:
+        """Encode ASCII string into Modbus registers (2 chars per register, big-endian)."""
+        padded = s.ljust(num_regs * 2, "\x00")[:num_regs * 2]
+        return [(ord(padded[i]) << 8) | ord(padded[i + 1]) for i in range(0, num_regs * 2, 2)]
 
     # Pre-populate all known addresses to 0
     initial: dict[int, int] = {}
-    for addr in range(32080, 32082):   # PV power (INT32)
+
+    # SUN2000 device identification block (MBSA V1 register map, 30000-30071)
+    model_regs = _str_to_regs("SUN2000-10KTL", 10)  # 30000-30009: model STRING20
+    for i, val in enumerate(model_regs):
+        initial[30000 + i] = val
+    sn_regs = _str_to_regs("HA-NIBE-BRIDGE", 10)    # 30010-30019: SN STRING20
+    for i, val in enumerate(sn_regs):
+        initial[30010 + i] = val
+    fw_regs = _str_to_regs("V200R002", 8)            # 30020-30027: firmware STRING16
+    for i, val in enumerate(fw_regs):
+        initial[30020 + i] = val
+    initial[30028] = 1                               # 30028: device type (1 = string inverter)
+    for addr in range(30029, 30071):                 # 30029-30070: reserved/status (0)
         initial[addr] = 0
-    for addr in range(37113, 37115):   # Grid power (INT32)
+    initial[30071] = 0                               # 30071: active PV power (W, UINT16) — updated live
+
+    # SUN2000 V3 data registers — ranges Nibe polls
+    for addr in range(32000, 32002):   # 32000: device state
         initial[addr] = 0
-    initial[37760] = 0                  # Battery SoC (UINT16)
-    for addr in range(37765, 37767):   # Battery power (INT32)
+    initial[32000] = 0x0002            # State 1: grid-connected normal
+    for addr in range(32008, 32011):   # DC inputs (voltage/current)
         initial[addr] = 0
+    for addr in range(32016, 32116):   # DC strings + AC outputs + misc (100 regs)
+        initial[addr] = 0
+    initial[32089] = 0x0002            # Running state: grid-connected/running
+    for addr in range(32080, 32082):   # PV power (INT32) — updated live
+        initial[addr] = 0
+    for addr in range(37101, 37120):   # Grid voltages/currents/frequency
+        initial[addr] = 0
+    for addr in range(37113, 37115):   # Grid power (INT32) — updated live
+        initial[addr] = 0
+    for addr in range(37132, 37138):   # Storage output/grid data
+        initial[addr] = 0
+    for addr in range(37758, 37760):   # Battery storage state
+        initial[addr] = 0
+    initial[37758] = 0x0002            # Storage state: running
+    initial[37760] = 0                  # Battery SoC (UINT16) — updated live
+    for addr in range(37765, 37767):   # Battery power (INT32) — updated live
+        initial[addr] = 0
+    initial[47107] = 0                  # Storage control param 1
+    initial[47108] = 0                  # Storage control param 2
     for addr in range(40000, 40124):   # SunSpec header + model 1 + model 103
         initial[addr] = 0
 
@@ -162,6 +210,7 @@ class RegisterBank:
         if pv_w is not None:
             v = int(round(pv_w))
             self._set_int32(HUAWEI_REG_PV_POWER, v)
+            self._set_uint16(NIBE_REG_PV_POWER, max(0, v))  # MBSA V1: UINT16, no negatives
             # SunSpec M103 AC Power (INT16, W, scale factor 0 at 40091)
             self._set_uint16(SUNSPEC_M103_W, v & 0xFFFF)
 
