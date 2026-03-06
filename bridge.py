@@ -101,6 +101,13 @@ def build_modbus_context(unit_id: int):
     from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
     from pymodbus.datastore.store import ModbusSparseDataBlock
 
+    class ZeroDefaultSparseBlock(ModbusSparseDataBlock):
+        """Returns 0 for any address not explicitly set (instead of IllegalAddress)."""
+        def validate(self, address, count=1):
+            return True
+        def getValues(self, address, count=1):
+            return [self.values.get(address + i, 0) for i in range(count)]
+
     # Pre-populate all known addresses to 0
     initial: dict[int, int] = {}
     for addr in range(32080, 32082):   # PV power (INT32)
@@ -113,7 +120,7 @@ def build_modbus_context(unit_id: int):
     for addr in range(40000, 40124):   # SunSpec header + model 1 + model 103
         initial[addr] = 0
 
-    block = ModbusSparseDataBlock(initial)
+    block = ZeroDefaultSparseBlock(initial)
     slave = ModbusSlaveContext(hr=block, zero_mode=True)
     ctx = ModbusServerContext(slaves={unit_id: slave}, single=False)
 
@@ -444,12 +451,15 @@ def main():
     opts = load_options()
 
     log_level_str = opts.get("log_level", "info")
+    log_level = LOG_LEVELS.get(log_level_str, logging.INFO)
     logging.basicConfig(
-        level=LOG_LEVELS.get(log_level_str, logging.INFO),
+        level=log_level,
         format="%(asctime)s [%(levelname)-8s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+    if log_level == logging.DEBUG:
+        logging.getLogger("pymodbus").setLevel(logging.DEBUG)
 
     server_kwargs = None
     bank = None
