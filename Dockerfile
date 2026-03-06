@@ -3,6 +3,10 @@ FROM $BUILD_FROM
 
 RUN pip3 install aiohttp "pymodbus>=3.0,<3.7" --break-system-packages
 
+# BUILD_VERSION changes every release — forces cache invalidation for COPY layers
+ARG BUILD_VERSION
+RUN echo "$BUILD_VERSION" > /addon_version
+
 COPY run.sh /run.sh
 COPY bridge.py /bridge.py
 

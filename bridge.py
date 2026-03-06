@@ -47,6 +47,9 @@ HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge) [MBSA V
 
 # Older SUN2000 register map (MBSA V1/V2) — what Nibe S1255 actually polls
 NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — active power output [MBSA V1]
+NIBE_REG_BATT_MAX_CHG = 37758  # UINT16, 1 reg, W — max charge power (not state!)
+NIBE_REG_BATT_MAX_DIS = 37759  # UINT16, 1 reg, W — max discharge power
+HUAWEI_REG_LOAD_POWER = 37101  # INT32, 2 regs, W — total load/consumption power
 
 # SunSpec magic – populated so Nibe finds either proprietary or SunSpec regs
 SUNSPEC_BASE          = 40000  # "SunS" identifier (2 regs)
@@ -109,13 +112,11 @@ def build_modbus_context(unit_id: int):
         def validate(self, address, count=1):
             return True
         def getValues(self, address, count=1):
+            result = [self.values.get(address + i, 0) for i in range(count)]
             unknown = [address + i for i in range(count) if (address + i) not in self.values]
             if unknown:
                 log.info(f"Nibe polling unknown reg(s): addr={address} count={count} unknown={unknown}")
-            else:
-                result = [self.values.get(address + i, 0) for i in range(count)]
-                log.debug(f"Nibe polling known reg(s): addr={address} count={count} values={result}")
-            return [self.values.get(address + i, 0) for i in range(count)]
+            return result
 
     def _str_to_regs(s: str, num_regs: int) -> list[int]:
         """Encode ASCII string into Modbus registers (2 chars per register, big-endian)."""
@@ -146,7 +147,7 @@ def build_modbus_context(unit_id: int):
     initial[32000] = 0x0002            # State 1: grid-connected normal
     for addr in range(32008, 32011):   # DC inputs (voltage/current)
         initial[addr] = 0
-    for addr in range(32016, 32116):   # DC strings + AC outputs + misc (100 regs)
+    for addr in range(32016, 32200):   # DC strings + AC outputs + misc (covers full scan)
         initial[addr] = 0
     initial[32089] = 0x0002            # Running state: grid-connected/running
     for addr in range(32080, 32082):   # PV power (INT32) — updated live
@@ -157,9 +158,8 @@ def build_modbus_context(unit_id: int):
         initial[addr] = 0
     for addr in range(37132, 37138):   # Storage output/grid data
         initial[addr] = 0
-    for addr in range(37758, 37760):   # Battery storage state
-        initial[addr] = 0
-    initial[37758] = 0x0002            # Storage state: running
+    initial[37758] = 5000              # Max charge power (W) — realistic for LUNA2000
+    initial[37759] = 5000              # Max discharge power (W)
     initial[37760] = 0                  # Battery SoC (UINT16) — updated live
     for addr in range(37765, 37767):   # Battery power (INT32) — updated live
         initial[addr] = 0
@@ -218,11 +218,20 @@ class RegisterBank:
             self._set_int32(HUAWEI_REG_GRID_POWER, int(round(grid_w)))
 
         if soc_pct is not None:
-            # SUN2000 stores SoC as % * 10
+            # SUN2000 V3 stores SoC as % * 10
             self._set_uint16(HUAWEI_REG_BATT_SOC, int(round(soc_pct * 10)))
 
         if batt_w is not None:
             self._set_int32(HUAWEI_REG_BATT_POWER, int(round(batt_w)))
+
+        # House consumption = PV production + battery discharge + grid import
+        # batt_w: positive=charging, negative=discharging (Huawei EMMA convention)
+        # grid_w: positive=export, negative=import (Huawei EMMA convention)
+        if None not in (pv_w, batt_w, grid_w):
+            consumption = max(0, int(round(
+                max(0.0, pv_w) + max(0.0, -batt_w) + max(0.0, -grid_w)
+            )))
+            self._set_int32(HUAWEI_REG_LOAD_POWER, consumption)
 
         log.debug(
             f"RegisterBank updated: pv={pv_w} grid={grid_w} soc={soc_pct} batt={batt_w}"
