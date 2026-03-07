@@ -167,30 +167,23 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     # Pre-populate all known addresses to 0
     initial: dict[int, int] = {}
 
-    # SUN2000MA (MAP0) device identification block — MBSA V3.0 layout
-    # 30000-30014: Model string (STRING30, 15 regs)
-    model_regs = _str_to_regs("SUN2000-10K-MAP0", 15)
+    # Device identification — SUN2000-10KTL model string (recognized by Nibe, loads KTL profile)
+    # 30000-30009: Model string (STRING20, 10 regs)
+    model_regs = _str_to_regs("SUN2000-10KTL", 10)
     for i, val in enumerate(model_regs):
         initial[30000 + i] = val
-    # 30015-30024: Serial number (STRING20, 10 regs)
+    # 30010-30019: Serial number (STRING20, 10 regs)
     sn_regs = _str_to_regs("BT2470706907", 10)
     for i, val in enumerate(sn_regs):
-        initial[30015 + i] = val
-    # 30025-30034: reserved zeros
-    for addr in range(30025, 30035):
-        initial[addr] = 0
-    # 30035-30049: firmware version (STRING30, 15 regs)
-    fw_regs = _str_to_regs("V200R024D02", 15)
+        initial[30010 + i] = val
+    # 30020-30027: firmware version (STRING16, 8 regs)
+    fw_regs = _str_to_regs("V200R024D02", 8)
     for i, val in enumerate(fw_regs):
-        initial[30035 + i] = val
-    # 30050-30064: software version (STRING30, 15 regs)
-    sw_regs = _str_to_regs("V200R024C00SPC108", 15)
-    for i, val in enumerate(sw_regs):
-        initial[30050 + i] = val
-    # 30065-30069: reserved zeros
-    for addr in range(30065, 30070):
+        initial[30020 + i] = val
+    initial[30028] = 429                             # 30028: device type (429 = SUN2000-10KTL hybrid)
+    for addr in range(30029, 30071):                 # 30029-30070: reserved/status
         initial[addr] = 0
-    initial[30070] = 1004                            # 30070: model ID — 1004 = SUN2000_10K_MAP0 [MAP0 spec]
+    initial[30070] = 1004                            # 30070: MAP0 model ID (informational, not polled by Nibe)
     initial[30071] = 0                               # 30071: active PV power (W, UINT16) — updated live
 
     # SUN2000 V3 data registers — ranges Nibe polls
@@ -322,11 +315,11 @@ class RegisterBank:
 
         if pv_w is not None:
             v = int(round(pv_w))
-            self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: total DC input from PV [MAP0 spec #135]
-            # 32080: AC output = PV ± battery (batt_w>0=charging reduces AC out)
-            ac_out = v - int(round(batt_w)) if batt_w is not None else v
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, ac_out)  # 32080: AC active power [MAP0 spec #146]
-            self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W (PV production)
+            # Nibe (KTL profile) reads 32080 for PV production — put pv_w there
+            # Also write pv_w to 32064 (MAP0 spec: total DC input) for compatibility
+            self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: DC input from PV [MAP0 #135]
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)       # 32080: pv_w here — Nibe KTL profile reads this
+            self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W
             # 30071: Nibe reads this for "Produced power" wall display (UINT16, W)
             self._set_uint16(NIBE_REG_PV_POWER, max(0, v))
 
@@ -760,7 +753,7 @@ def main():
         identity = ModbusDeviceIdentification()
         identity.VendorName  = "Huawei Digital Power"
         identity.ProductCode = "SUN2000MA"
-        identity.ModelName   = "SUN2000-10K-MAP0"
+        identity.ModelName   = "SUN2000-10KTL"
         identity.MajorMinorRevision = "V200R024C00SPC108"
 
         server_kwargs = {"context": ctx, "identity": identity, "address": (host, port)}
