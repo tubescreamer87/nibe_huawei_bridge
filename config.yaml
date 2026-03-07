@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
 description: "Emuluje Huawei SUN2000 cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
-version: "2.1.2"
+version: "2.6.5"
 slug: "nibe_huawei_bridge"
 init: false
 hassio_api: true
@@ -20,17 +20,37 @@ ports_description:
 options:
   update_interval: 30
   log_level: "info"
+  rated_power_kw: 10
   sensors:
-    pv_power: "sensor.emma_pv_output_power"
+    pv_power: "sensor.inverter_input_power"
     battery_soc: "sensor.emma_state_of_capacity"
     battery_power: "sensor.emma_battery_charge_discharge_power"
     grid_power: "sensor.emma_feed_in_power"
+    # Optional – leave empty ("") to skip
+    load_power: "sensor.emma_load_power"
+    daily_yield_kwh: "sensor.emma_inverter_energy_yield_today"
+    total_yield_kwh: "sensor.emma_inverter_total_energy_yield"
+    grid_export_today_kwh: "sensor.emma_feed_in_to_grid_today"
+    grid_import_today_kwh: "sensor.emma_supply_from_grid_today"
+    inverter_temp: "sensor.inverter_internal_temperature"
+    power_factor: "sensor.emma_ucinnik_3"
+    pv1_voltage: "sensor.inverter_pv_1_voltage"
+    pv2_voltage: "sensor.inverter_pv_2_voltage"
+    battery_max_charge_power: "sensor.batteries_maximum_charge_power"
+    battery_max_discharge_power: "sensor.batteries_maximum_discharge_power"
   # Modbus TCP server – Nibe S1255 sa pripojí ako master a číta SUN2000 registre
   modbus_server:
     enabled: true
     port: 5020          # 502 vyžaduje root; použite 5020 ako default
     host: "0.0.0.0"
     unit_id: 1
+  # Test mode – hardcoded values, skips HA sensor polling
+  test_mode:
+    enabled: false
+    pv_power: 0          # W – simulated PV production
+    battery_soc: 80      # % – simulated battery state of charge
+    battery_power: -500  # W – positive=charging, negative=discharging
+    grid_power: -200     # W – positive=export, negative=import
   # Surplus logika - riadenie TÚV a heating offsetu podľa prebytku (fallback)
   surplus_control:
     enabled: false
@@ -46,16 +66,34 @@ options:
 schema:
   update_interval: int
   log_level: "list(debug|info|warning|error)"
+  rated_power_kw: int
   sensors:
     pv_power: str
     battery_soc: str
     battery_power: str
     grid_power: str
+    load_power: str
+    daily_yield_kwh: str
+    total_yield_kwh: str
+    grid_export_today_kwh: str
+    grid_import_today_kwh: str
+    inverter_temp: str
+    power_factor: str
+    pv1_voltage: str
+    pv2_voltage: str
+    battery_max_charge_power: str
+    battery_max_discharge_power: str
   modbus_server:
     enabled: bool
     port: int
     host: str
     unit_id: int
+  test_mode:
+    enabled: bool
+    pv_power: int
+    battery_soc: int
+    battery_power: int
+    grid_power: int
   surplus_control:
     enabled: bool
     nibe_hub: str
