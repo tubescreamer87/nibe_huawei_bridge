@@ -690,6 +690,78 @@ class NibeHuaweiBridge:
 
 
 # ---------------------------------------------------------------------------
+# MITM Modbus TCP proxy
+# ---------------------------------------------------------------------------
+
+def _decode_fc3_request(pdu: bytes) -> str:
+    if len(pdu) >= 5 and pdu[0] == 0x03:
+        addr, count = struct.unpack(">HH", pdu[1:5])
+        return f"FC3 ReadHolding addr={addr} count={count}"
+    return f"FC={pdu[0]:#04x} len={len(pdu)}"
+
+
+def _decode_fc3_response(pdu: bytes) -> str:
+    if len(pdu) >= 2 and pdu[0] == 0x03:
+        byte_count = pdu[1]
+        regs = [struct.unpack(">H", pdu[2+i:4+i])[0] for i in range(0, byte_count, 2)]
+        return f"FC3 Response {len(regs)} regs: {regs}"
+    return f"FC={pdu[0]:#04x} len={len(pdu)}"
+
+
+async def _mitm_handle(nibe_reader, nibe_writer, upstream_host, upstream_port,
+                       nibe_unit_id, upstream_unit_id):
+    peer = nibe_writer.get_extra_info("peername")
+    log.info(f"MITM: Nibe connected from {peer}")
+    try:
+        inv_reader, inv_writer = await asyncio.open_connection(upstream_host, upstream_port)
+    except Exception as e:
+        log.error(f"MITM: cannot connect to inverter: {e}")
+        nibe_writer.close()
+        return
+    log.info(f"MITM: forwarding to {upstream_host}:{upstream_port} "
+             f"(unit {nibe_unit_id}→{upstream_unit_id})")
+
+    async def forward(src: asyncio.StreamReader, dst: asyncio.StreamWriter,
+                      src_unit: int, dst_unit: int, label: str):
+        try:
+            while True:
+                header = await src.readexactly(7)
+                tid, proto, length, unit = struct.unpack(">HHHB", header)
+                payload = await src.readexactly(length - 1)
+                rewritten = struct.pack(">HHHB", tid, proto, length, dst_unit) + payload
+                if label == "→":
+                    log.info(f"MITM Nibe→Inv  unit={unit}→{dst_unit} {_decode_fc3_request(payload)}")
+                else:
+                    log.info(f"MITM Inv→Nibe  unit={unit}→{dst_unit} {_decode_fc3_response(payload)}")
+                dst.write(rewritten)
+                await dst.drain()
+        except asyncio.IncompleteReadError:
+            pass
+        except Exception as e:
+            log.debug(f"MITM forward [{label}] ended: {e}")
+
+    await asyncio.gather(
+        forward(nibe_reader, inv_writer, nibe_unit_id, upstream_unit_id, "→"),
+        forward(inv_reader, nibe_writer, upstream_unit_id, nibe_unit_id, "←"),
+    )
+    log.info("MITM: session closed")
+    inv_writer.close()
+    nibe_writer.close()
+
+
+async def run_mitm_proxy(listen_host: str, listen_port: int,
+                         upstream_host: str, upstream_port: int,
+                         nibe_unit_id: int, upstream_unit_id: int):
+    handler = lambda r, w: _mitm_handle(r, w, upstream_host, upstream_port,
+                                         nibe_unit_id, upstream_unit_id)
+    server = await asyncio.start_server(handler, listen_host, listen_port)
+    log.info(f"MITM proxy listening on {listen_host}:{listen_port} → "
+             f"{upstream_host}:{upstream_port}")
+    async with server:
+        await server.serve_forever()
+
+
+# ---------------------------------------------------------------------------
 # Async entry point
 # ---------------------------------------------------------------------------
 
@@ -740,6 +812,27 @@ def main():
     _f = _SuppressIllegalValue()
     for _h in logging.root.handlers:
         _h.addFilter(_f)
+
+    # MITM mode — bypass emulator, proxy directly to real inverter
+    mitm = opts.get("mitm_mode", {})
+    if mitm.get("enabled", False):
+        ms = opts.get("modbus_server", {})
+        listen_host = ms.get("host", "0.0.0.0")
+        listen_port = ms.get("port", 5020)
+        nibe_unit_id = ms.get("unit_id", 1)
+        upstream_host = mitm.get("upstream_host", "192.168.68.79")
+        upstream_port = mitm.get("upstream_port", 502)
+        upstream_unit_id = mitm.get("upstream_unit_id", 3)
+        log.info("=" * 60)
+        log.info("MITM PROXY MODE — emulation disabled")
+        log.info(f"  Listen:   {listen_host}:{listen_port} (unit {nibe_unit_id})")
+        log.info(f"  Upstream: {upstream_host}:{upstream_port} (unit {upstream_unit_id})")
+        log.info("  All register reads will be logged at INFO level")
+        log.info("=" * 60)
+        asyncio.run(run_mitm_proxy(listen_host, listen_port,
+                                   upstream_host, upstream_port,
+                                   nibe_unit_id, upstream_unit_id))
+        return
 
     server_kwargs = None
     bank = None
