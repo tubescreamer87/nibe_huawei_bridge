@@ -303,8 +303,10 @@ class RegisterBank:
         if pv_w is not None:
             v = int(round(pv_w))
             self._set_int32(HUAWEI_REG_PV_POWER, v)        # 32080: PV DC input (W) → "Capacity" on Nibe
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)      # 32064: AC active power (W)
-            self._set_uint16(SUNSPEC_M103_W, v & 0xFFFF)   # 40084: SunSpec Model 103 W
+            # 32064: inverter AC output = PV ± battery (batt_w>0=charging, so subtract)
+            ac_out = v - int(round(batt_w)) if batt_w is not None else v
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, ac_out)
+            self._set_uint16(SUNSPEC_M103_W, max(0, ac_out) & 0xFFFF)  # 40084: SunSpec Model 103 W
             # 30071: Nibe reads this (count=1, W) for "Produced power" in 3.1.11.8 menu.
             # Must be PV production in W — Nibe divides by 1000 to display kW.
             # House consumption uses 37101 (INT32 W) for energy flow display, not 30071.
