@@ -195,12 +195,12 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     # SUN2000 V3 data registers — ranges Nibe polls
     for addr in range(32000, 32002):   # 32000: device state
         initial[addr] = 0
-    initial[32000] = 0x0002            # State 1: grid-connected normal
+    initial[32000] = 6                 # State 1: grid-connected + battery active (matches real SUN2000-10K-MAP0)
     for addr in range(32008, 32011):   # DC inputs (voltage/current)
         initial[addr] = 0
     for addr in range(32016, 32200):   # DC strings + AC outputs + misc (covers full scan)
         initial[addr] = 0
-    initial[32089] = 0x0002            # Running state: grid-connected/running
+    initial[32089] = 512               # Running state: grid-connected/running (matches real SUN2000-10K-MAP0)
     for addr in range(32064, 32066):   # Total DC input from PV (INT32, W) — updated live [MAP0 #135]
         initial[addr] = 0
     initial[32084] = 1000              # Power factor (INT16, gain 1000 → 1.000) [MAP0 #148]
@@ -240,11 +240,13 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     initial[37000] = 2                  # Storage running status: 2=running
     initial[37001] = 0                  # Storage unit 1 power (INT32 high) — updated live
     initial[37002] = 0                  # Storage unit 1 power (INT32 low) — updated live
-    initial[37003] = 480                # Battery bus voltage (UINT16, gain 10 → 48.0V)
+    initial[37003] = 7940               # Battery bus voltage (UINT16, confirmed from real inverter trace)
     initial[37004] = 0                  # Storage unit 1 SoC (% × 10) — updated live
     # Battery unit 1 — max charge/discharge power [MAP0 spec §3.2 #16/#17]
     initial[37046] = 0;  initial[37047] = 5000  # Max charge power (UINT32, W) → 5000W
     initial[37048] = 0;  initial[37049] = 5000  # Max discharge power (UINT32, W) → 5000W
+    # 37758-37759: combined ESU max power (UINT32, W) — confirmed from real inverter trace
+    initial[37758] = 0;  initial[37759] = 20700
     # Combined ESU (Energy Storage Unit) registers [MAP0 spec §3.2 #32-37]
     initial[37760] = 0                  # Combined ESU SOC (UINT16, % × 10) — updated live
     initial[37762] = 2                  # ESU running status: 2=running [MAP0 §3.2 #34]
@@ -254,8 +256,8 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     initial[37738] = 0                  # Battery unit 2 SOC (% × 10, 0=not present)
     initial[37741] = 0                  # Battery unit 2 running status (0=offline)
     initial[37743] = 0;  initial[37744] = 0  # Battery unit 2 charge/discharge power (INT32, 0=no unit 2)
-    initial[47107] = 150                 # Battery unit 1 capacity (kWh × 10 → 15.0 kWh, 3×5kWh packs)
-    initial[47108] = 0                   # Battery unit 2 capacity — 0 = only one battery unit installed
+    initial[47107] = 1                   # Battery unit 1 — value 1 confirmed from real inverter trace
+    initial[47108] = 0                   # Battery unit 2 — 0 = not installed
 
     # Smart meter status [MAP0 spec §3.1 #260]
     initial[37100] = 1                  # Meter status: 1=normal
