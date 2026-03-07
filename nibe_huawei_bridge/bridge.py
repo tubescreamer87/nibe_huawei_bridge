@@ -168,8 +168,8 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     initial: dict[int, int] = {}
 
     # SUN2000MA (MAP0) device identification block — MBSA V3.0 layout
-    # 30000-30014: Model string (STRING30, 15 regs) — underscores required for Nibe profile match
-    model_regs = _str_to_regs("SUN2000_10K_MAP0", 15)
+    # 30000-30014: Model string (STRING30, 15 regs)
+    model_regs = _str_to_regs("SUN2000-10K-MAP0", 15)
     for i, val in enumerate(model_regs):
         initial[30000 + i] = val
     # 30015-30024: Serial number (STRING20, 10 regs)
@@ -760,7 +760,7 @@ def main():
         identity = ModbusDeviceIdentification()
         identity.VendorName  = "Huawei Digital Power"
         identity.ProductCode = "SUN2000MA"
-        identity.ModelName   = "SUN2000_10K_MAP0"
+        identity.ModelName   = "SUN2000-10K-MAP0"
         identity.MajorMinorRevision = "V200R024C00SPC108"
 
         server_kwargs = {"context": ctx, "identity": identity, "address": (host, port)}
