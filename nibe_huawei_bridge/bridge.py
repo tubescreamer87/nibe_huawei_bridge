@@ -279,8 +279,10 @@ class RegisterBank:
         if batt_max_dis is not None:
             self._set_uint32(NIBE_REG_BATT_MAX_DIS, int(round(batt_max_dis)))  # 37048, UINT32
 
-        # Note: no dedicated house load register in MAP0 spec meter section.
-        # house_load is computed but not written to any register (Nibe doesn't poll it from bridge).
+        # Write house load to smart meter phase A active power (37132-37133).
+        # Nibe polls 37132:6 every cycle and uses these for house consumption display.
+        if house_load is not None:
+            self._set_int32(37132, house_load)
 
         # PV string DC voltages — MBSA V1: 32016=VPV-1, 32018=VPV-2 (gain 10 → e.g. 350.5V → 3505)
         for key, reg in [("pv1_v", HUAWEI_REG_PV1_VOLTAGE), ("pv2_v", HUAWEI_REG_PV2_VOLTAGE)]:
@@ -698,7 +700,7 @@ async def run_mitm_proxy(listen_host: str, listen_port: int,
 # ---------------------------------------------------------------------------
 
 # Registers logged at INFO level so polling activity is always visible
-_INFO_REGS = {30071, 32064, 32065, 32080, 32081, 37113, 37114, 37760, 37765, 37766}
+_INFO_REGS = {30071, 32064, 32065, 32080, 32081, 37113, 37114, 37132, 37133, 37760, 37765, 37766}
 
 
 class SimpleModbusTcpServer:
