@@ -155,10 +155,10 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
             result = [self.values.get(address + i, 0) for i in range(count)]
             polled = {address + i for i in range(count)}
             if polled & _TRACE_REGS:
-                log.info(f"Nibe READ trace: addr={address} count={count} vals={result}")
+                log.debug(f"Nibe READ trace: addr={address} count={count} vals={result}")
             unknown = [address + i for i in range(count) if (address + i) not in self.values]
             if unknown:
-                log.info(f"Nibe polling unknown reg(s): addr={address} count={count} unknown={unknown}")
+                log.debug(f"Nibe polling unknown reg(s): addr={address} count={count} unknown={unknown}")
             log.debug(f"Nibe READ: addr={address} count={count} vals={result}")
             return result
 
