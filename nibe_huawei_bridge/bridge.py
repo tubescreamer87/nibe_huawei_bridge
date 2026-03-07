@@ -123,187 +123,117 @@ def _pack_uint16(value: int) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
-# RegisterBank – wraps pymodbus slave context for SUN2000 register layout
+# RegisterBank – plain dict + helpers for SUN2000 register layout
 # ---------------------------------------------------------------------------
 
-def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
+def _str_to_regs(s: str, num_regs: int) -> list[int]:
+    """Encode ASCII string into Modbus registers (2 chars per register, big-endian)."""
+    padded = s.ljust(num_regs * 2, "\x00")[:num_regs * 2]
+    return [(ord(padded[i]) << 8) | ord(padded[i + 1]) for i in range(0, num_regs * 2, 2)]
+
+
+def build_register_dict(rated_power_kw: int = 10) -> dict:
     """
-    Build a ModbusServerContext with a sparse data block covering all known
-    SUN2000 and SunSpec register addresses.  zero_mode=True so that register
-    address N maps directly to data block index N (Huawei docs use 0-based).
+    Build a plain dict[int, int] covering all known SUN2000 and SunSpec register
+    addresses.  Missing addresses return 0 at read time (no IllegalAddress).
     """
-    from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
-    from pymodbus.datastore.store import ModbusSparseDataBlock
-
-    # Registers worth logging at DEBUG level to trace which reg maps to which display field
-    _TRACE_REGS = {
-        30071, 30073,                        # Nibe V1: PV power (W), rated power (kW)
-        32064, 32065,                        # MAP0: DC input power from PV (INT32, W)
-        32080, 32081,                        # MAP0: AC output active power (INT32, W)
-        37113, 37114,                        # Grid active power (INT32, W)
-        40083, 40084, 40085,                 # SunSpec W, W_SF
-    }
-
-    class ZeroDefaultSparseBlock(ModbusSparseDataBlock):
-        """Returns 0 for any address not explicitly set (instead of IllegalAddress)."""
-        def validate(self, address, count=1):
-            return True
-        def getValues(self, address, count=1):
-            result = [self.values.get(address + i, 0) for i in range(count)]
-            polled = {address + i for i in range(count)}
-            if polled & _TRACE_REGS:
-                log.debug(f"Nibe READ trace: addr={address} count={count} vals={result}")
-            unknown = [address + i for i in range(count) if (address + i) not in self.values]
-            if unknown:
-                log.debug(f"Nibe polling unknown reg(s): addr={address} count={count} unknown={unknown}")
-            log.debug(f"Nibe READ: addr={address} count={count} vals={result}")
-            return result
-
-    def _str_to_regs(s: str, num_regs: int) -> list[int]:
-        """Encode ASCII string into Modbus registers (2 chars per register, big-endian)."""
-        padded = s.ljust(num_regs * 2, "\x00")[:num_regs * 2]
-        return [(ord(padded[i]) << 8) | ord(padded[i + 1]) for i in range(0, num_regs * 2, 2)]
-
-    # Pre-populate all known addresses to 0
-    initial: dict[int, int] = {}
+    regs: dict[int, int] = {}
 
     # Device identification — exact MAP0 spec layout (mirrors real SUN2000-10K-MAP0 inverter)
-    # 30000-30014: Model name (STRING30, 15 regs) [MAP0 spec]
-    model_regs = _str_to_regs("SUN2000-10K-MAP0", 15)
-    for i, val in enumerate(model_regs):
-        initial[30000 + i] = val
-    # 30015-30024: Serial number (STRING20, 10 regs) [MAP0 spec]
-    sn_regs = _str_to_regs("BT2470706907", 10)
-    for i, val in enumerate(sn_regs):
-        initial[30015 + i] = val
-    # 30025-30034: reserved
+    for i, val in enumerate(_str_to_regs("SUN2000-10K-MAP0", 15)):
+        regs[30000 + i] = val                          # 30000-30014: Model name (STRING30, 15 regs)
+    for i, val in enumerate(_str_to_regs("BT2470706907", 10)):
+        regs[30015 + i] = val                          # 30015-30024: Serial number (STRING20, 10 regs)
     for addr in range(30025, 30035):
-        initial[addr] = 0
-    # 30035-30049: Firmware version (STRING30, 15 regs) [MAP0 spec]
-    fw_regs = _str_to_regs("V200R024D02", 15)
-    for i, val in enumerate(fw_regs):
-        initial[30035 + i] = val
-    # 30050-30064: Software version (STRING30, 15 regs) [MAP0 spec]
-    sw_regs = _str_to_regs("V200R024C00SPC108", 15)
-    for i, val in enumerate(sw_regs):
-        initial[30050 + i] = val
-    for addr in range(30065, 30071):                 # 30065-30069: reserved/status
-        initial[addr] = 0
-    initial[30070] = 1004                            # 30070: MAP0 model ID
-    initial[30071] = 0                               # 30071: active PV power (W, UINT16) — updated live
+        regs[addr] = 0                                 # 30025-30034: reserved
+    for i, val in enumerate(_str_to_regs("V200R024D02", 15)):
+        regs[30035 + i] = val                          # 30035-30049: Firmware version (STRING30, 15 regs)
+    for i, val in enumerate(_str_to_regs("V200R024C00SPC108", 15)):
+        regs[30050 + i] = val                          # 30050-30064: Software version (STRING30, 15 regs)
+    for addr in range(30065, 30071):
+        regs[addr] = 0                                 # 30065-30069: reserved/status
+    regs[30070] = 1004                                 # MAP0 model ID
+    regs[30071] = 0                                    # active PV power (W, UINT16) — updated live
+    regs[30073] = rated_power_kw                       # Rated power in kW (UINT16, gain 1)
 
-    # SUN2000 V3 data registers — ranges Nibe polls
-    for addr in range(32000, 32002):   # 32000: device state
-        initial[addr] = 0
-    initial[32000] = 6                 # State 1: grid-connected + battery active (matches real SUN2000-10K-MAP0)
-    for addr in range(32008, 32011):   # DC inputs (voltage/current)
-        initial[addr] = 0
-    for addr in range(32016, 32200):   # DC strings + AC outputs + misc (covers full scan)
-        initial[addr] = 0
-    initial[32089] = 512               # Running state: grid-connected/running (matches real SUN2000-10K-MAP0)
-    for addr in range(32064, 32066):   # Total DC input from PV (INT32, W) — updated live [MAP0 #135]
-        initial[addr] = 0
-    initial[32084] = 1000              # Power factor (INT16, gain 1000 → 1.000) [MAP0 #148]
-    initial[32085] = 5000              # Grid frequency (UINT16, Hz×100 → 50.00 Hz) [MAP0 #149]
-    for addr in range(32080, 32082):   # AC active power output (INT32, W) — updated live [MAP0 #146]
-        initial[addr] = 0
+    # SUN2000 inverter data registers
+    regs[32000] = 6                                    # Device state: grid-connected + battery active
+    for addr in range(32008, 32011):
+        regs[addr] = 0
+    for addr in range(32016, 32200):                   # DC strings + AC outputs + misc
+        regs[addr] = 0
+    regs[32064] = 0;  regs[32065] = 0                 # Total DC input from PV (INT32, W) — updated live
+    regs[32080] = 0;  regs[32081] = 0                 # AC active power output (INT32, W) — updated live
+    regs[32084] = 1000                                 # Power factor (INT16, gain 1000 → 1.000)
+    regs[32085] = 5000                                 # Grid frequency (UINT16, Hz×100 → 50.00 Hz)
+    regs[32089] = 512                                  # Running state: grid-connected/running
+
     # Smart meter data registers [MAP0 spec §3.1 #261-281]
-    # 37101-37102: Phase A grid voltage (INT32, V, gain 10 → 230.0V = 2300)
-    initial[37101] = 0;    initial[37102] = 2300
-    # 37103-37104: Phase B grid voltage
-    initial[37103] = 0;    initial[37104] = 2300
-    # 37105-37106: Phase C grid voltage
-    initial[37105] = 0;    initial[37106] = 2300
-    # 37107-37112: Phase A/B/C currents (INT32, A, gain 100) — zero until load known
+    regs[37100] = 1                                    # Meter status: 1=normal
+    regs[37101] = 0;   regs[37102] = 2300             # Phase A grid voltage (INT32, V×10 → 230.0V)
+    regs[37103] = 0;   regs[37104] = 2300             # Phase B grid voltage
+    regs[37105] = 0;   regs[37106] = 2300             # Phase C grid voltage
     for addr in range(37107, 37113):
-        initial[addr] = 0
-    # 37113-37114: Grid active power (INT32, W, gain 1, +export/-import) — updated live
-    initial[37113] = 0;    initial[37114] = 0
-    # 37115-37116: Reactive power (INT32, Var, gain 1)
-    initial[37115] = 0;    initial[37116] = 0
-    # 37117: Power factor (INT16, gain 1000 → 1.000)
-    initial[37117] = 1000
-    # 37118: Grid frequency (INT16, Hz, gain 100 → 50.00 Hz = 5000)
-    initial[37118] = 5000
-    # 37119-37120: Positive active energy (exported, INT32, kWh, gain 100) — updated live
-    initial[37119] = 0;    initial[37120] = 0
-    # 37121-37122: Reverse active energy (imported, INT32, kWh, gain 100) — updated live
-    initial[37121] = 0;    initial[37122] = 0
-    # 37123-37124: Cumulative reactive energy
-    initial[37123] = 0;    initial[37124] = 0
-    # 37125: Meter type (1 = three-phase DTSU666-H)
-    initial[37125] = 1
-    # 37132-37137: Phase A/B/C active power (INT32, W, gain 1) — zero (meter data)
+        regs[addr] = 0                                 # Phase A/B/C currents (INT32, A×100)
+    regs[37113] = 0;   regs[37114] = 0                # Grid active power (INT32, W) — updated live
+    regs[37115] = 0;   regs[37116] = 0                # Reactive power (INT32, Var)
+    regs[37117] = 1000                                 # Power factor (INT16, gain 1000 → 1.000)
+    regs[37118] = 5000                                 # Grid frequency (INT16, Hz×100 → 50.00 Hz)
+    regs[37119] = 0;   regs[37120] = 0                # Positive active energy (exported, INT32, kWh×100)
+    regs[37121] = 0;   regs[37122] = 0                # Reverse active energy (imported, INT32, kWh×100)
+    regs[37123] = 0;   regs[37124] = 0                # Cumulative reactive energy
+    regs[37125] = 1                                    # Meter type: 1=three-phase DTSU666-H
     for addr in range(37132, 37138):
-        initial[addr] = 0
-    # Battery presence / capability registers
-    initial[37000] = 2                  # Storage running status: 2=running
-    initial[37001] = 0                  # Storage unit 1 power (INT32 high) — updated live
-    initial[37002] = 0                  # Storage unit 1 power (INT32 low) — updated live
-    initial[37003] = 7940               # Battery bus voltage (UINT16, confirmed from real inverter trace)
-    initial[37004] = 0                  # Storage unit 1 SoC (% × 10) — updated live
-    # Battery unit 1 — max charge/discharge power [MAP0 spec §3.2 #16/#17]
-    initial[37046] = 0;  initial[37047] = 5000  # Max charge power (UINT32, W) → 5000W
-    initial[37048] = 0;  initial[37049] = 5000  # Max discharge power (UINT32, W) → 5000W
-    # 37758-37759: combined ESU max power (UINT32, W) — confirmed from real inverter trace
-    initial[37758] = 0;  initial[37759] = 20700
-    # Combined ESU (Energy Storage Unit) registers [MAP0 spec §3.2 #32-37]
-    initial[37760] = 0                  # Combined ESU SOC (UINT16, % × 10) — updated live
-    initial[37762] = 2                  # ESU running status: 2=running [MAP0 §3.2 #34]
-    for addr in range(37765, 37767):   # Combined ESU charge/discharge power (INT32, W) — updated live
-        initial[addr] = 0
-    # Battery unit 2 registers — SN at 37700, SOC at 37738, status/power at 37741/37743
-    initial[37738] = 0                  # Battery unit 2 SOC (% × 10, 0=not present)
-    initial[37741] = 0                  # Battery unit 2 running status (0=offline)
-    initial[37743] = 0;  initial[37744] = 0  # Battery unit 2 charge/discharge power (INT32, 0=no unit 2)
-    initial[47107] = 1                   # Battery unit 1 — value 1 confirmed from real inverter trace
-    initial[47108] = 0                   # Battery unit 2 — 0 = not installed
+        regs[addr] = 0                                 # Phase A/B/C active power (INT32, W)
 
-    # Smart meter status [MAP0 spec §3.1 #260]
-    initial[37100] = 1                  # Meter status: 1=normal
+    # Battery unit 1 registers [MAP0 spec §3.2]
+    regs[37000] = 2                                    # Storage running status: 2=running
+    regs[37001] = 0;   regs[37002] = 0                # Storage unit 1 power (INT32, W) — updated live
+    regs[37003] = 7940                                 # Battery bus voltage (confirmed from real inverter)
+    regs[37004] = 0                                    # Storage unit 1 SoC (% × 10) — updated live
+    regs[37046] = 0;   regs[37047] = 5000             # Max charge power (UINT32, W) → 5000W
+    regs[37048] = 0;   regs[37049] = 5000             # Max discharge power (UINT32, W) → 5000W
+    regs[37758] = 0;   regs[37759] = 20700            # Combined ESU max power (UINT32, W)
+    regs[37760] = 0                                    # Combined ESU SOC (UINT16, % × 10) — updated live
+    regs[37762] = 2                                    # ESU running status: 2=running
+    regs[37765] = 0;   regs[37766] = 0                # Combined ESU charge/discharge power (INT32, W)
 
-    # Rated power (so Nibe shows correct inverter capacity, not live production)
-    # Set via options.rated_power_kw; passed in as parameter
-    initial[30073] = rated_power_kw     # Rated power in kW (UINT16, gain 1)
-    for addr in range(40000, 40124):   # SunSpec header + model 1 + model 103
-        initial[addr] = 0
-    initial[40085] = 0                  # SunSpec W_SF = 0 → W register is in watts (scale ×1)
+    # Battery unit 2 registers (not installed)
+    regs[37738] = 0                                    # Battery unit 2 SOC (0=not present)
+    regs[37741] = 0                                    # Battery unit 2 running status (0=offline)
+    regs[37743] = 0;   regs[37744] = 0                # Battery unit 2 charge/discharge power (INT32)
+    regs[47107] = 1                                    # Battery unit 1 — confirmed from real inverter
+    regs[47108] = 0                                    # Battery unit 2 — 0=not installed
 
-    block = ZeroDefaultSparseBlock(initial)
-    slave = ModbusSlaveContext(hr=block, zero_mode=True)
-    ctx = ModbusServerContext(slaves={unit_id: slave}, single=False)
+    # SunSpec header + model 1 (Common) + model 103 (Three-phase inverter) + end marker
+    for addr in range(40000, 40124):
+        regs[addr] = 0
+    regs[40000] = 0x5375;  regs[40001] = 0x6E53      # "SunS" identifier
+    regs[40002] = 1;        regs[40003] = 66           # Model 1, len=66
+    regs[40070] = 103;      regs[40071] = 50           # Model 103, len=50
+    regs[40085] = 0                                    # W_SF = 0 → watts (scale ×1)
+    regs[40122] = 0xFFFF;   regs[40123] = 0           # End marker
 
-    # Seed SunSpec header
-    _write_ctx(ctx, unit_id, 40000, [0x5375, 0x6E53])   # "SunS"
-    _write_ctx(ctx, unit_id, 40002, [1, 66])              # Model 1, len=66
-    _write_ctx(ctx, unit_id, 40070, [103, 50])            # Model 103, len=50
-    _write_ctx(ctx, unit_id, 40122, [0xFFFF, 0])          # End marker
-
-    return ctx
-
-
-def _write_ctx(ctx, unit_id: int, addr: int, values: list[int]):
-    """Write a list of 16-bit words into the server context at addr."""
-    ctx[unit_id].setValues(3, addr, values)
+    return regs
 
 
 class RegisterBank:
-    """Keeps the pymodbus server context up-to-date with latest sensor values."""
+    """Keeps the shared register dict up-to-date with latest sensor values."""
 
-    def __init__(self, ctx, unit_id: int):
-        self._ctx = ctx
-        self._uid = unit_id
+    def __init__(self, regs: dict):
+        self._r = regs
 
     def _set_int32(self, addr: int, val: int):
-        _write_ctx(self._ctx, self._uid, addr, _pack_int32(val))
+        words = _pack_int32(val)
+        self._r[addr] = words[0];  self._r[addr + 1] = words[1]
 
     def _set_uint16(self, addr: int, val: int):
-        _write_ctx(self._ctx, self._uid, addr, _pack_uint16(val))
+        self._r[addr] = _pack_uint16(val)[0]
 
     def _set_uint32(self, addr: int, val: int):
-        """Pack unsigned int32 into two big-endian 16-bit Modbus words."""
         clamped = max(0, min(0xFFFFFFFF, val))
-        _write_ctx(self._ctx, self._uid, addr, [(clamped >> 16) & 0xFFFF, clamped & 0xFFFF])
+        self._r[addr] = (clamped >> 16) & 0xFFFF
+        self._r[addr + 1] = clamped & 0xFFFF
 
     def update(self, data: dict):
         """Write latest values into Modbus registers.  None = keep previous."""
@@ -764,22 +694,136 @@ async def run_mitm_proxy(listen_host: str, listen_port: int,
 
 
 # ---------------------------------------------------------------------------
-# Async entry point
+# Custom Modbus TCP server (replaces pymodbus ModbusTcpServer)
 # ---------------------------------------------------------------------------
 
-async def async_main(server_kwargs: Optional[dict], bridge: NibeHuaweiBridge):
-    tasks = [bridge.run()]
-    if server_kwargs is not None:
-        from pymodbus.server import ModbusTcpServer
+# Registers logged at INFO level so polling activity is always visible
+_INFO_REGS = {30071, 32064, 32065, 32080, 32081, 37113, 37114, 37760, 37765, 37766}
+
+
+class SimpleModbusTcpServer:
+    """
+    Minimal asyncio Modbus TCP server — handles FC3 (Read Holding Registers)
+    from a plain dict[int, int].  Replaces pymodbus ModbusTcpServer.
+
+    Key improvements over pymodbus approach:
+    - Logs raw bytes per TCP segment BEFORE frame parsing (full diagnostic visibility)
+    - Sends proper Modbus exception response for count=0 (pymodbus silently dropped it)
+    - Handles count>125 with an exception response instead of silent drop
+    - No hidden framing bugs — we own the loop
+    """
+
+    def __init__(self, host: str, port: int, unit_id: int, regs: dict):
+        self._host = host
+        self._port = port
+        self._unit_id = unit_id
+        self._regs = regs
+        self._server = None
+
+    async def serve_forever(self):
         try:
-            server = ModbusTcpServer(**server_kwargs)
+            self._server = await asyncio.start_server(
+                self._handle_client, self._host, self._port)
         except PermissionError:
-            port = server_kwargs.get("address", ("", 0))[1]
             log.error(
-                f"Nepodarilo sa otvoriť port {port} – porty < 1024 vyžadujú root. "
+                f"Nepodarilo sa otvoriť port {self._port} – porty < 1024 vyžadujú root. "
                 "Zmeňte modbus_server.port na 5020 alebo spustite ako root."
             )
             sys.exit(1)
+        log.info(f"Modbus TCP server (custom) na {self._host}:{self._port} "
+                 f"(unit_id={self._unit_id})")
+        async with self._server:
+            await self._server.serve_forever()
+
+    async def _handle_client(self, reader: asyncio.StreamReader,
+                             writer: asyncio.StreamWriter):
+        peer = writer.get_extra_info("peername")
+        log.info(f"Nibe connected from {peer}")
+        buf = b""
+        try:
+            while True:
+                chunk = await reader.read(256)
+                if not chunk:
+                    break
+                log.debug(f"TCP recv {len(chunk)}B: {chunk.hex(' ')}")
+                buf += chunk
+                while True:
+                    if len(buf) < 6:
+                        break  # need at least MBAP (TID+proto+length = 6 bytes)
+                    tid, proto, length = struct.unpack(">HHH", buf[:6])
+                    frame_end = 6 + length          # MBAP(6) + PDU body(length bytes)
+                    if len(buf) < frame_end:
+                        break  # frame not yet complete
+                    frame = buf[:frame_end]
+                    buf = buf[frame_end:]
+                    resp = self._process_frame(frame, tid, proto, length)
+                    if resp:
+                        log.debug(f"TCP send {len(resp)}B: {resp.hex(' ')}")
+                        writer.write(resp)
+                        await writer.drain()
+        except asyncio.IncompleteReadError:
+            pass
+        except Exception as e:
+            log.debug(f"Client {peer} error: {e}")
+        finally:
+            log.info(f"Nibe disconnected from {peer}")
+            writer.close()
+
+    def _process_frame(self, frame: bytes, tid: int, proto: int, length: int) -> bytes:
+        if length < 2:
+            log.warning(f"Modbus frame too short: length={length}")
+            return b""
+        unit = frame[6]
+        pdu = frame[7:]
+        fc = pdu[0]
+        log.debug(f"Modbus frame: TID={tid} unit={unit} FC={fc:#04x} PDU={pdu.hex()}")
+
+        if unit != self._unit_id:
+            # Wrong unit — Modbus spec says no response for gateway target device failure
+            log.debug(f"Ignoring frame for unit={unit} (our unit={self._unit_id})")
+            return b""
+
+        if fc == 0x03:
+            return self._fc3(tid, proto, unit, pdu)
+
+        log.info(f"Unsupported FC={fc:#04x} from Nibe, sending IllegalFunction exception")
+        return self._exception(tid, proto, unit, fc, 0x01)  # Illegal Function
+
+    def _fc3(self, tid: int, proto: int, unit: int, pdu: bytes) -> bytes:
+        if len(pdu) < 5:
+            log.warning(f"FC3 PDU too short ({len(pdu)}B), sending IllegalDataValue")
+            return self._exception(tid, proto, unit, 0x03, 0x03)
+
+        addr, count = struct.unpack(">HH", pdu[1:5])
+
+        if count == 0 or count > 125:
+            log.info(f"FC3 invalid count={count} addr={addr} — sending IllegalDataValue exception")
+            return self._exception(tid, proto, unit, 0x03, 0x03)
+
+        regs = [self._regs.get(addr + i, 0) for i in range(count)]
+        polled = {addr + i for i in range(count)}
+        if polled & _INFO_REGS:
+            log.info(f"Nibe READ addr={addr} count={count} vals={regs}")
+        else:
+            log.debug(f"Nibe READ addr={addr} count={count} vals={regs}")
+
+        data = b"".join(struct.pack(">H", r & 0xFFFF) for r in regs)
+        resp_pdu = bytes([0x03, len(data)]) + data
+        return struct.pack(">HHH", tid, proto, 1 + len(resp_pdu)) + bytes([unit]) + resp_pdu
+
+    @staticmethod
+    def _exception(tid: int, proto: int, unit: int, fc: int, code: int) -> bytes:
+        resp_pdu = bytes([fc | 0x80, code])
+        return struct.pack(">HHH", tid, proto, 1 + len(resp_pdu)) + bytes([unit]) + resp_pdu
+
+
+# ---------------------------------------------------------------------------
+# Async entry point
+# ---------------------------------------------------------------------------
+
+async def async_main(server: Optional[SimpleModbusTcpServer], bridge: NibeHuaweiBridge):
+    tasks = [bridge.run()]
+    if server is not None:
         tasks.append(server.serve_forever())
     await asyncio.gather(*tasks)
 
@@ -799,22 +843,6 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
-    if log_level == logging.DEBUG:
-        logging.getLogger("pymodbus").setLevel(logging.DEBUG)
-
-    # Nibe sometimes sends FC3 requests with count > 125 (Modbus max).
-    # pymodbus rejects these with IllegalValue — suppress the noise since
-    # the Nibe retries successfully with smaller counts.
-    class _SuppressIllegalValue(logging.Filter):
-        def filter(self, record):
-            return "IllegalValue" not in record.getMessage()
-    # Filters on a logger only intercept records emitted directly by that logger,
-    # not records propagated from child loggers (e.g. pymodbus.server.async_io).
-    # Add the filter to the root handlers so it catches everything that propagates up.
-    _f = _SuppressIllegalValue()
-    for _h in logging.root.handlers:
-        _h.addFilter(_f)
-
     # MITM mode — bypass emulator, proxy directly to real inverter
     mitm = opts.get("mitm_mode", {})
     if mitm.get("enabled", False):
@@ -836,32 +864,22 @@ def main():
                                    nibe_unit_id, upstream_unit_id))
         return
 
-    server_kwargs = None
+    server = None
     bank = None
 
     ms = opts.get("modbus_server", {})
     if ms.get("enabled", True):
-        from pymodbus.device import ModbusDeviceIdentification
-
         unit_id        = ms.get("unit_id", 1)
         host           = ms.get("host", "0.0.0.0")
         port           = ms.get("port", 5020)
         rated_power_kw = int(opts.get("rated_power_kw", 10))
 
-        ctx = build_modbus_context(unit_id, rated_power_kw=rated_power_kw)
-        bank = RegisterBank(ctx, unit_id)
-
-        identity = ModbusDeviceIdentification()
-        identity.VendorName  = "Huawei Digital Power"
-        identity.ProductCode = "SUN2000MA"
-        identity.ModelName   = "SUN2000-10K-MAP0"
-        identity.MajorMinorRevision = "V200R024C00SPC108"
-
-        server_kwargs = {"context": ctx, "identity": identity, "address": (host, port)}
-        log.info(f"Modbus TCP server na {host}:{port} (unit_id={unit_id})")
+        regs = build_register_dict(rated_power_kw=rated_power_kw)
+        bank = RegisterBank(regs)
+        server = SimpleModbusTcpServer(host, port, unit_id, regs)
 
     bridge = NibeHuaweiBridge(opts, bank=bank)
-    asyncio.run(async_main(server_kwargs, bridge))
+    asyncio.run(async_main(server, bridge))
 
 
 if __name__ == "__main__":
