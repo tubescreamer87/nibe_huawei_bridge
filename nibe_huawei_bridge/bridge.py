@@ -171,13 +171,13 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     initial: dict[int, int] = {}
 
     # SUN2000 device identification block (MBSA V1 register map, 30000-30071)
-    model_regs = _str_to_regs("SUN2000-10K-MAP0", 10)  # 30000-30009: model STRING20
+    model_regs = _str_to_regs("SUN2000-10KTL", 10)    # 30000-30009: model STRING20
     for i, val in enumerate(model_regs):
         initial[30000 + i] = val
     sn_regs = _str_to_regs("HA-NIBE-BRIDGE", 10)      # 30010-30019: SN STRING20
     for i, val in enumerate(sn_regs):
         initial[30010 + i] = val
-    fw_regs = _str_to_regs("V200R024C00SPC10", 8)     # 30020-30027: firmware STRING16
+    fw_regs = _str_to_regs("V200R002", 8)              # 30020-30027: firmware STRING16
     for i, val in enumerate(fw_regs):
         initial[30020 + i] = val
     initial[30028] = 1                               # 30028: device type (1 = string inverter)
@@ -743,8 +743,8 @@ def main():
         identity = ModbusDeviceIdentification()
         identity.VendorName  = "Huawei"
         identity.ProductCode = "SUN2000"
-        identity.ModelName   = "SUN2000-10K-MAP0"
-        identity.MajorMinorRevision = "V200R024C00SPC108"
+        identity.ModelName   = "SUN2000-10KTL"
+        identity.MajorMinorRevision = "V200R002"
 
         server_kwargs = {"context": ctx, "identity": identity, "address": (host, port)}
         log.info(f"Modbus TCP server na {host}:{port} (unit_id={unit_id})")
