@@ -39,46 +39,44 @@ log = logging.getLogger("nibe-huawei")
 # Register constants
 # ---------------------------------------------------------------------------
 
-# Huawei SUN2000 proprietary Modbus registers (0-based)
-HUAWEI_REG_PV_POWER   = 32080  # INT32, 2 regs, W (PV DC input power)  [MBSA V3]
-HUAWEI_REG_ACTIVE_PWR = 32064  # INT32, 2 regs, W (inverter AC active power output) [MBSA V1/V3]
-HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import) [MBSA V3]
-HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % * 10               [MBSA V3]
-HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge) [MBSA V3]
+# Huawei SUN2000MA (MAP0) Modbus registers — MBSA V3.0 spec, model SUN2000_10K_MAP0
+HUAWEI_REG_DC_INPUT   = 32064  # INT32, 2 regs, kW×1000 = W (total DC input from PV)  [MAP0 spec §3.1 #135]
+HUAWEI_REG_ACTIVE_PWR = 32080  # INT32, 2 regs, kW×1000 = W (AC output active power)  [MAP0 spec §3.1 #146]
+HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import)                  [MAP0 spec §3.1 #267]
+HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % × 10 (combined ESU SOC)              [MAP0 spec §3.2 #33]
+HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge, combined ESU) [MAP0 spec §3.2 #37]
 
 # Older SUN2000 register map (MBSA V1/V2) — what Nibe S1255 actually polls
-NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — active power output [MBSA V1]
+NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — PV power (Nibe wall display "Produced power")
 NIBE_REG_RATED_POWER  = 30073  # UINT16, 1 reg, kW — rated power of inverter
-NIBE_REG_BATT_MAX_CHG = 37758  # UINT16, 1 reg, W — max charge power (not state!)
-NIBE_REG_BATT_MAX_DIS = 37759  # UINT16, 1 reg, W — max discharge power
-HUAWEI_REG_LOAD_POWER = 37101  # INT32, 2 regs, W — total load/consumption power
+NIBE_REG_BATT_MAX_CHG = 37046  # UINT32, 2 regs, W — max charge power  [MAP0 spec §3.2 #16]
+NIBE_REG_BATT_MAX_DIS = 37048  # UINT32, 2 regs, W — max discharge power [MAP0 spec §3.2 #17]
 
-# Storage / battery presence registers
+# Battery unit 1 registers [MAP0 spec §3.2]
 HUAWEI_REG_STORAGE_STATUS = 37000  # UINT16, 1 reg — 0=offline,1=standby,2=running,3=fault,4=sleep
-HUAWEI_REG_STORAGE_POWER  = 37001  # INT32, 2 regs, W — storage unit 1 charge/discharge power
-HUAWEI_REG_STORAGE_SOC    = 37004  # UINT16, 1 reg, % × 10 — storage unit 1 SOC (alt location)
-HUAWEI_REG_BATT_TYPE      = 37762  # UINT16, 1 reg — 0=none, 1=LUNA2000
+HUAWEI_REG_STORAGE_POWER  = 37001  # INT32, 2 regs, W — unit 1 charge/discharge power (+charge/-discharge)
+HUAWEI_REG_STORAGE_SOC    = 37004  # UINT16, 1 reg, % × 10 — unit 1 SOC
+HUAWEI_REG_ESU_STATUS     = 37762  # UINT16, 1 reg — ESU running status: 0=offline,1=standby,2=running [MAP0 §3.2 #34]
 
-# Smart meter status
+# Smart meter status [MAP0 spec §3.1]
 HUAWEI_REG_METER_STATUS   = 37100  # UINT16, 1 reg — 0=offline, 1=normal
 
-# PV string DC inputs — MBSA V1 layout (what Nibe S1255 actually uses for VPV-1/VPV-2)
-# NOTE: in MBSA V3, 32016-32018 are AC phase voltages — but Nibe uses V1 where these are DC strings
-HUAWEI_REG_PV1_VOLTAGE = 32016  # UINT16, gain 10, V — PV string 1 DC voltage (V1: VPV-1)
-HUAWEI_REG_PV2_VOLTAGE = 32018  # UINT16, gain 10, V — PV string 2 DC voltage (V1: VPV-2)
+# PV string DC inputs [MAP0 spec §3.1]
+HUAWEI_REG_PV1_VOLTAGE = 32016  # UINT16, gain 10, V — PV string 1 DC voltage
+HUAWEI_REG_PV2_VOLTAGE = 32018  # UINT16, gain 10, V — PV string 2 DC voltage
 
-# Inverter output registers
+# Inverter output registers [MAP0 spec §3.1]
 HUAWEI_REG_TEMPERATURE  = 32087  # INT16, gain 10, °C
 HUAWEI_REG_POWER_FACTOR = 32084  # INT16, gain 1000
 HUAWEI_REG_GRID_FREQ    = 32085  # UINT16, gain 100, Hz
 
-# Energy counters
+# Energy counters [MAP0 spec §3.1]
 HUAWEI_REG_TOTAL_YIELD = 32106  # UINT32, gain 100, kWh (lifetime)
 HUAWEI_REG_DAILY_YIELD = 32114  # UINT32, gain 100, kWh (today)
 
-# Smart meter energy registers
-HUAWEI_REG_GRID_EXPORT = 37107  # INT32, gain 100, kWh (exported today)
-HUAWEI_REG_GRID_IMPORT = 37109  # UINT32, gain 100, kWh (imported today)
+# Smart meter energy counters [MAP0 spec §3.1 #271 / #272]
+HUAWEI_REG_GRID_EXPORT = 37119  # INT32, gain 100, kWh (positive active energy = exported)
+HUAWEI_REG_GRID_IMPORT = 37121  # INT32, gain 100, kWh (reverse active energy = imported)
 
 # SunSpec magic – populated so Nibe finds either proprietary or SunSpec regs
 SUNSPEC_BASE          = 40000  # "SunS" identifier (2 regs)
@@ -137,13 +135,12 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
     from pymodbus.datastore.store import ModbusSparseDataBlock
 
-    # Registers worth logging at INFO level to trace which reg maps to which display field
+    # Registers worth logging at DEBUG level to trace which reg maps to which display field
     _TRACE_REGS = {
-        30071, 30073,                        # MBSA V1: house load (kW), rated power (kW)
-        32064, 32065,                        # AC active power output (W, INT32)
-        32080, 32081,                        # PV DC input power (W, INT32)
-        37101, 37102,                        # Load/consumption power (W, INT32)
-        37113, 37114,                        # Grid power (W, INT32)
+        30071, 30073,                        # Nibe V1: PV power (W), rated power (kW)
+        32064, 32065,                        # MAP0: DC input power from PV (INT32, W)
+        32080, 32081,                        # MAP0: AC output active power (INT32, W)
+        37113, 37114,                        # Grid active power (INT32, W)
         40083, 40084, 40085,                 # SunSpec W, W_SF
     }
 
@@ -170,19 +167,30 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     # Pre-populate all known addresses to 0
     initial: dict[int, int] = {}
 
-    # SUN2000 device identification block (MBSA V1 register map, 30000-30071)
-    model_regs = _str_to_regs("SUN2000-10KTL-M1", 10)  # 30000-30009: model STRING20
+    # SUN2000MA (MAP0) device identification block — MBSA V3.0 layout
+    # 30000-30014: Model string (STRING30, 15 regs) — underscores required for Nibe profile match
+    model_regs = _str_to_regs("SUN2000_10K_MAP0", 15)
     for i, val in enumerate(model_regs):
         initial[30000 + i] = val
-    sn_regs = _str_to_regs("HA-NIBE-BRIDGE", 10)      # 30010-30019: SN STRING20
+    # 30015-30024: Serial number (STRING20, 10 regs)
+    sn_regs = _str_to_regs("BT2470706907", 10)
     for i, val in enumerate(sn_regs):
-        initial[30010 + i] = val
-    fw_regs = _str_to_regs("V200R002", 8)              # 30020-30027: firmware STRING16
-    for i, val in enumerate(fw_regs):
-        initial[30020 + i] = val
-    initial[30028] = 429                             # 30028: device type (429 = SUN2000-10KTL-M1 hybrid)
-    for addr in range(30029, 30071):                 # 30029-30070: reserved/status (0)
+        initial[30015 + i] = val
+    # 30025-30034: reserved zeros
+    for addr in range(30025, 30035):
         initial[addr] = 0
+    # 30035-30049: firmware version (STRING30, 15 regs)
+    fw_regs = _str_to_regs("V200R024D02", 15)
+    for i, val in enumerate(fw_regs):
+        initial[30035 + i] = val
+    # 30050-30064: software version (STRING30, 15 regs)
+    sw_regs = _str_to_regs("V200R024C00SPC108", 15)
+    for i, val in enumerate(sw_regs):
+        initial[30050 + i] = val
+    # 30065-30069: reserved zeros
+    for addr in range(30065, 30070):
+        initial[addr] = 0
+    initial[30070] = 1004                            # 30070: model ID — 1004 = SUN2000_10K_MAP0 [MAP0 spec]
     initial[30071] = 0                               # 30071: active PV power (W, UINT16) — updated live
 
     # SUN2000 V3 data registers — ranges Nibe polls
@@ -194,17 +202,40 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     for addr in range(32016, 32200):   # DC strings + AC outputs + misc (covers full scan)
         initial[addr] = 0
     initial[32089] = 0x0002            # Running state: grid-connected/running
-    for addr in range(32064, 32066):   # AC active power (INT32) — updated live
+    for addr in range(32064, 32066):   # Total DC input from PV (INT32, W) — updated live [MAP0 #135]
         initial[addr] = 0
-    initial[32068] = 1000              # Power factor (INT16, gain 1000 → 1.000)
-    initial[32070] = 5000              # Grid frequency in AC output area (UINT16, Hz×100 → 50.00 Hz)
-    for addr in range(32080, 32082):   # PV input power (INT32) — updated live
+    initial[32084] = 1000              # Power factor (INT16, gain 1000 → 1.000) [MAP0 #148]
+    initial[32085] = 5000              # Grid frequency (UINT16, Hz×100 → 50.00 Hz) [MAP0 #149]
+    for addr in range(32080, 32082):   # AC active power output (INT32, W) — updated live [MAP0 #146]
         initial[addr] = 0
-    for addr in range(37101, 37120):   # Grid voltages/currents/frequency
+    # Smart meter data registers [MAP0 spec §3.1 #261-281]
+    # 37101-37102: Phase A grid voltage (INT32, V, gain 10 → 230.0V = 2300)
+    initial[37101] = 0;    initial[37102] = 2300
+    # 37103-37104: Phase B grid voltage
+    initial[37103] = 0;    initial[37104] = 2300
+    # 37105-37106: Phase C grid voltage
+    initial[37105] = 0;    initial[37106] = 2300
+    # 37107-37112: Phase A/B/C currents (INT32, A, gain 100) — zero until load known
+    for addr in range(37107, 37113):
         initial[addr] = 0
-    for addr in range(37113, 37115):   # Grid power (INT32) — updated live
-        initial[addr] = 0
-    for addr in range(37132, 37138):   # Storage output/grid data
+    # 37113-37114: Grid active power (INT32, W, gain 1, +export/-import) — updated live
+    initial[37113] = 0;    initial[37114] = 0
+    # 37115-37116: Reactive power (INT32, Var, gain 1)
+    initial[37115] = 0;    initial[37116] = 0
+    # 37117: Power factor (INT16, gain 1000 → 1.000)
+    initial[37117] = 1000
+    # 37118: Grid frequency (INT16, Hz, gain 100 → 50.00 Hz = 5000)
+    initial[37118] = 5000
+    # 37119-37120: Positive active energy (exported, INT32, kWh, gain 100) — updated live
+    initial[37119] = 0;    initial[37120] = 0
+    # 37121-37122: Reverse active energy (imported, INT32, kWh, gain 100) — updated live
+    initial[37121] = 0;    initial[37122] = 0
+    # 37123-37124: Cumulative reactive energy
+    initial[37123] = 0;    initial[37124] = 0
+    # 37125: Meter type (1 = three-phase DTSU666-H)
+    initial[37125] = 1
+    # 37132-37137: Phase A/B/C active power (INT32, W, gain 1) — zero (meter data)
+    for addr in range(37132, 37138):
         initial[addr] = 0
     # Battery presence / capability registers
     initial[37000] = 2                  # Storage running status: 2=running
@@ -212,34 +243,23 @@ def build_modbus_context(unit_id: int, rated_power_kw: int = 10):
     initial[37002] = 0                  # Storage unit 1 power (INT32 low) — updated live
     initial[37003] = 480                # Battery bus voltage (UINT16, gain 10 → 48.0V)
     initial[37004] = 0                  # Storage unit 1 SoC (% × 10) — updated live
-    # LUNA2000 extended battery identification registers
-    initial[37738] = 1                  # Battery product model: 1=LUNA2000 installed
-    initial[37739] = 0                  # Battery pack count (populated below)
-    initial[37740] = 0                  # Reserved
-    initial[37741] = 2                  # Battery working status: 2=running
-    initial[37742] = 0                  # Reserved
-    initial[37743] = 0                  # Charge state flag
-    initial[37744] = 0                  # Discharge state flag
-    initial[37758] = 5000              # Max charge power (W) — realistic for LUNA2000
-    initial[37759] = 5000              # Max discharge power (W)
-    initial[37760] = 0                  # Battery SoC (UINT16) — updated live
-    initial[37762] = 1                  # Battery type: 1=LUNA2000
-    for addr in range(37765, 37767):   # Battery power (INT32) — updated live
+    # Battery unit 1 — max charge/discharge power [MAP0 spec §3.2 #16/#17]
+    initial[37046] = 0;  initial[37047] = 5000  # Max charge power (UINT32, W) → 5000W
+    initial[37048] = 0;  initial[37049] = 5000  # Max discharge power (UINT32, W) → 5000W
+    # Combined ESU (Energy Storage Unit) registers [MAP0 spec §3.2 #32-37]
+    initial[37760] = 0                  # Combined ESU SOC (UINT16, % × 10) — updated live
+    initial[37762] = 2                  # ESU running status: 2=running [MAP0 §3.2 #34]
+    for addr in range(37765, 37767):   # Combined ESU charge/discharge power (INT32, W) — updated live
         initial[addr] = 0
+    # Battery unit 2 registers — SN at 37700, SOC at 37738, status/power at 37741/37743
+    initial[37738] = 0                  # Battery unit 2 SOC (% × 10, 0=not present)
+    initial[37741] = 0                  # Battery unit 2 running status (0=offline)
+    initial[37743] = 0;  initial[37744] = 0  # Battery unit 2 charge/discharge power (INT32, 0=no unit 2)
     initial[47107] = 150                 # Battery unit 1 capacity (kWh × 10 → 15.0 kWh, 3×5kWh packs)
     initial[47108] = 0                   # Battery unit 2 capacity — 0 = only one battery unit installed
 
-    # Smart meter status and fixed meter registers
+    # Smart meter status [MAP0 spec §3.1 #260]
     initial[37100] = 1                  # Meter status: 1=normal
-    initial[37103] = 0                  # Reactive power (INT32 high) — zero is fine
-    initial[37104] = 0                  # Reactive power (INT32 low)
-    initial[37105] = 0                  # Power factor (INT16, gain 1000)
-    initial[37106] = 5000               # Meter grid frequency (UINT16, Hz×100 → 50.00 Hz) — CRITICAL
-    # 37107-37114: grid export/import kWh + grid power — covered by range(37101,37120)
-    initial[37111] = 1                  # Meter type: 1=three-phase (DTSU666-H)
-    initial[37112] = 2300               # Meter phase A voltage (UINT16, gain 10 → 230.0V)
-    initial[37115] = 2300               # Meter phase B voltage (UINT16, gain 10 → 230.0V)
-    initial[37118] = 2300               # Meter phase C voltage (UINT16, gain 10 → 230.0V)
 
     # Rated power (so Nibe shows correct inverter capacity, not live production)
     # Set via options.rated_power_kw; passed in as parameter
@@ -302,14 +322,12 @@ class RegisterBank:
 
         if pv_w is not None:
             v = int(round(pv_w))
-            self._set_int32(HUAWEI_REG_PV_POWER, v)        # 32080: PV DC input (W) → "Capacity" on Nibe
-            # 32064: inverter AC output = PV ± battery (batt_w>0=charging, so subtract)
+            self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: total DC input from PV [MAP0 spec #135]
+            # 32080: AC output = PV ± battery (batt_w>0=charging reduces AC out)
             ac_out = v - int(round(batt_w)) if batt_w is not None else v
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, ac_out)
-            self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W (use PV production, not AC out)
-            # 30071: Nibe reads this (count=1, W) for "Produced power" in 3.1.11.8 menu.
-            # Must be PV production in W — Nibe divides by 1000 to display kW.
-            # House consumption uses 37101 (INT32 W) for energy flow display, not 30071.
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, ac_out)  # 32080: AC active power [MAP0 spec #146]
+            self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W (PV production)
+            # 30071: Nibe reads this for "Produced power" wall display (UINT16, W)
             self._set_uint16(NIBE_REG_PV_POWER, max(0, v))
 
         if grid_w is not None:
@@ -325,14 +343,13 @@ class RegisterBank:
 
         batt_max_chg = data.get("batt_max_chg")
         if batt_max_chg is not None:
-            self._set_uint16(NIBE_REG_BATT_MAX_CHG, int(round(batt_max_chg)))
+            self._set_uint32(NIBE_REG_BATT_MAX_CHG, int(round(batt_max_chg)))  # 37046, UINT32
         batt_max_dis = data.get("batt_max_dis")
         if batt_max_dis is not None:
-            self._set_uint16(NIBE_REG_BATT_MAX_DIS, int(round(batt_max_dis)))
+            self._set_uint32(NIBE_REG_BATT_MAX_DIS, int(round(batt_max_dis)))  # 37048, UINT32
 
-        # 37101 (INT32, W): house consumption for energy flow display
-        if house_load is not None:
-            self._set_int32(HUAWEI_REG_LOAD_POWER, house_load)
+        # Note: no dedicated house load register in MAP0 spec meter section.
+        # house_load is computed but not written to any register (Nibe doesn't poll it from bridge).
 
         # PV string DC voltages — MBSA V1: 32016=VPV-1, 32018=VPV-2 (gain 10 → e.g. 350.5V → 3505)
         for key, reg in [("pv1_v", HUAWEI_REG_PV1_VOLTAGE), ("pv2_v", HUAWEI_REG_PV2_VOLTAGE)]:
@@ -741,10 +758,10 @@ def main():
         bank = RegisterBank(ctx, unit_id)
 
         identity = ModbusDeviceIdentification()
-        identity.VendorName  = "Huawei"
-        identity.ProductCode = "SUN2000"
-        identity.ModelName   = "SUN2000-10KTL-M1"
-        identity.MajorMinorRevision = "V200R002"
+        identity.VendorName  = "Huawei Digital Power"
+        identity.ProductCode = "SUN2000MA"
+        identity.ModelName   = "SUN2000_10K_MAP0"
+        identity.MajorMinorRevision = "V200R024C00SPC108"
 
         server_kwargs = {"context": ctx, "identity": identity, "address": (host, port)}
         log.info(f"Modbus TCP server na {host}:{port} (unit_id={unit_id})")
