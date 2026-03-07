@@ -796,7 +796,15 @@ class SimpleModbusTcpServer:
 
         addr, count = struct.unpack(">HH", pdu[1:5])
 
-        if count == 0 or count > 125:
+        if count == 0:
+            # Nibe sends count=0 for addr=32016 (PV1 voltage) as a probe.
+            # Real inverter responds with a valid empty FC3 (byte_count=0); Nibe then
+            # continues polling.  An exception response causes Nibe to re-identify
+            # from scratch and never reach battery registers.
+            log.info(f"FC3 count=0 addr={addr} — returning valid empty response (real inverter behaviour)")
+            resp_pdu = bytes([0x03, 0x00])  # FC3, byte_count=0
+            return struct.pack(">HHH", tid, proto, 1 + len(resp_pdu)) + bytes([unit]) + resp_pdu
+        if count > 125:
             log.info(f"FC3 invalid count={count} addr={addr} — sending IllegalDataValue exception")
             return self._exception(tid, proto, unit, 0x03, 0x03)
 
