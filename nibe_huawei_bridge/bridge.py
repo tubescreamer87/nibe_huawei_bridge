@@ -232,24 +232,30 @@ class RegisterBank:
 
     def write_diagnostic(self):
         """Write unique fingerprint values to every key register for identification.
-        Read the Nibe display and match the value to the register below:
-          30071  → 1111   (UINT16, "Produced power" candidate)
-          32064  → 2222   (INT32 total DC input)
-          32080  → 3333   (INT32 active power)
-          37113  → 4444   (INT32 grid power)
-          37132  → 5555   (INT32 house/smart-meter phase A)
-          37760  → 666    (UINT16 SOC ×10 = 66.6 %)
-          37765  → 7777   (INT32 battery power)
+        reg[32080] and reg[32081] are written INDEPENDENTLY (not as INT32) so that
+        reg[32080] stays non-zero — required for Nibe to switch to extended register polling.
+
+        Read the Nibe display and match the shown value to the register below:
+          30071        → 1111   (UINT16)
+          32064–32065  → 2222   (INT32 DC input;  Nibe shows 2.222 kW)
+          32080        → 333    (UINT16 high word; Nibe shows 333/100 = 3.33 kW "Produced power")
+          32081        → 4444   (UINT16 low word;  Nibe shows 4444/1000 = 4.444 kW "Inverter capacity")
+          37113–37114  → 5555   (INT32 grid power; Nibe shows 5.555 kW)
+          37132–37133  → 6666   (INT32 house load; Nibe shows 6.666 kW)
+          37760        → 777    (UINT16 SOC ×10;   Nibe shows 77.7 %)
+          37765–37766  → 8888   (INT32 batt power; Nibe shows 8.888 kW)
         """
         self._set_uint16(30071, 1111)
         self._set_int32(32064,  2222)
-        self._set_int32(32080,  3333)
-        self._set_int32(37113,  4444)
-        self._set_int32(37132,  5555)
-        self._set_uint16(37760, 666)
-        self._set_int32(37765,  7777)
-        log.info("DIAGNOSTIC: registers loaded — 30071=1111 32064=2222 32080=3333 "
-                 "37113=4444 37132=5555 37760=666(66.6%) 37765=7777")
+        # Write 32080/32081 independently — keeps high word non-zero for extended polling
+        self._r[HUAWEI_REG_ACTIVE_PWR]     = 333   # 32080 high word → "Produced power"
+        self._r[HUAWEI_REG_ACTIVE_PWR + 1] = 4444  # 32081 low word  → "Inverter capacity"
+        self._set_int32(37113,  5555)
+        self._set_int32(37132,  6666)
+        self._set_uint16(37760, 777)
+        self._set_int32(37765,  8888)
+        log.info("DIAGNOSTIC: 30071=1111  32080=333(3.33kW)  32081=4444(4.444kW)  "
+                 "32064=2222  37113=5555  37132=6666  37760=777(77.7%)  37765=8888")
 
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
