@@ -732,7 +732,7 @@ async def run_mitm_proxy(listen_host: str, listen_port: int,
 # ---------------------------------------------------------------------------
 
 # Registers logged at INFO level so polling activity is always visible
-_INFO_REGS = {30071, 32064, 32065, 32080, 32081, 37113, 37114, 37132, 37133, 37760, 37765, 37766}
+_INFO_REGS = {30071, 32016, 32064, 32065, 32080, 32081, 37113, 37114, 37132, 37133, 37760, 37765, 37766}
 
 
 class SimpleModbusTcpServer:
