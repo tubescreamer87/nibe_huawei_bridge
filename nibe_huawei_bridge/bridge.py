@@ -233,33 +233,36 @@ class RegisterBank:
     def write_diagnostic(self):
         """Write unique fingerprint values to key registers for identification.
 
-        IMPORTANT: reg[32080], reg[32081] and reg[30071] are intentionally left at 0.
-        Nibe enters extended polling mode only when it reads reg[32080]=[0,0] AND
-        reg[30071]=0 simultaneously (valid SUN2000 standby state). Writing any non-zero
-        value to these registers prevents Nibe from switching to extended mode.
+        Extended mode is triggered by the startup delay (15s of zeros at boot).
+        By the time write_diagnostic() is called, extended mode is already established
+        and sticky — so reg[32080] and reg[30071] can hold non-zero fingerprints safely.
+
+        NOTE: Nibe treats reg[32080]=0 as "inverter offline" and hides ALL solar values
+        on its display (even battery and grid). So 32080 MUST be non-zero here.
 
         Read the Nibe display and match the shown value to the register below:
-          32016        → 3131   (PV1 voltage; Nibe shows 313.1 V)
-          32018        → 3232   (PV2 voltage; Nibe shows 323.2 V)
-          32064–32065  → 2222   (INT32 DC input;  Nibe shows 2.222 kW)
-          37113–37114  → 5555   (INT32 grid power; Nibe shows 5.555 kW)
-          37132–37133  → 6666   (INT32 house load; Nibe shows 6.666 kW)
-          37760        → 777    (UINT16 SOC ×10;   Nibe shows 77.7 %)
-          37765–37766  → 8888   (INT32 batt power; Nibe shows 8.888 kW)
-          32080–32081  → [0,0]  (kept zero so extended mode triggers)
-          30071        → 0      (kept zero so extended mode triggers)
+          30071        → 1111   (UINT16;            Nibe shows ?)
+          32016        → 3131   (PV1 voltage;       Nibe shows 313.1 V)
+          32018        → 3232   (PV2 voltage;       Nibe shows 323.2 V)
+          32064–32065  → 2222   (INT32 DC input;    Nibe shows 2.222 kW)
+          32080–32081  → 3333   (INT32 active pwr;  Nibe shows 3.333 kW — "Produced power" / "Inverter capacity")
+          37113–37114  → 5555   (INT32 grid power;  Nibe shows 5.555 kW)
+          37132–37133  → 6666   (INT32 house load;  Nibe shows 6.666 kW)
+          37760        → 777    (UINT16 SOC ×10;    Nibe shows 77.7 %)
+          37765–37766  → 8888   (INT32 batt power;  Nibe shows 8.888 kW)
         """
+        self._set_uint16(30071, 1111)
         self._r[HUAWEI_REG_PV1_VOLTAGE] = 3131    # 32016: PV1 voltage (313.1 V)
         self._r[HUAWEI_REG_PV2_VOLTAGE] = 3232    # 32018: PV2 voltage (323.2 V)
         self._set_int32(32064,  2222)
+        self._set_int32(HUAWEI_REG_ACTIVE_PWR, 3333)  # 32080–32081; must be non-zero or Nibe hides all values
         self._set_int32(37113,  5555)
         self._set_int32(37132,  6666)
         self._set_uint16(37760, 777)
         self._set_int32(37765,  8888)
-        # Leave reg[32080], reg[32081], reg[30071] at 0 — required for extended mode trigger
-        log.info("DIAGNOSTIC: 32016=3131(313.1V)  32018=3232(323.2V)  32064=2222  "
-                 "37113=5555  37132=6666  37760=777(77.7%)  37765=8888  "
-                 "32080=0  32081=0  30071=0  (kept zero for extended mode)")
+        log.info("DIAGNOSTIC: 30071=1111  32016=3131(313.1V)  32018=3232(323.2V)  "
+                 "32064=2222  32080=3333(3.333kW)  37113=5555  37132=6666  "
+                 "37760=777(77.7%)  37765=8888")
 
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
