@@ -46,8 +46,8 @@ HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import)           
 HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % × 10 (combined ESU SOC)              [MAP0 spec §3.2 #33]
 HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge, combined ESU) [MAP0 spec §3.2 #37]
 
-# Older SUN2000 register map (MBSA V1/V2) — what Nibe S1255 actually polls
-NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — PV power (Nibe wall display "Produced power")
+# SUN2000 device info registers
+NIBE_REG_PV_STRINGS   = 30071  # UINT16, 1 reg, gain 1 — number of PV strings (static, not power)
 NIBE_REG_RATED_POWER  = 30073  # UINT16, 1 reg, kW — rated power of inverter
 NIBE_REG_BATT_MAX_CHG = 37046  # UINT32, 2 regs, W — max charge power  [MAP0 spec §3.2 #16]
 NIBE_REG_BATT_MAX_DIS = 37048  # UINT32, 2 regs, W — max discharge power [MAP0 spec §3.2 #17]
@@ -132,7 +132,7 @@ def _str_to_regs(s: str, num_regs: int) -> list[int]:
     return [(ord(padded[i]) << 8) | ord(padded[i + 1]) for i in range(0, num_regs * 2, 2)]
 
 
-def build_register_dict(rated_power_kw: int = 10) -> dict:
+def build_register_dict(rated_power_kw: int = 10, pv_strings: int = 1) -> dict:
     """
     Build a plain dict[int, int] covering all known SUN2000 and SunSpec register
     addresses.  Missing addresses return 0 at read time (no IllegalAddress).
@@ -153,7 +153,7 @@ def build_register_dict(rated_power_kw: int = 10) -> dict:
     for addr in range(30065, 30071):
         regs[addr] = 0                                 # 30065-30069: reserved/status
     regs[30070] = 1004                                 # MAP0 model ID
-    regs[30071] = 0                                    # active PV power (W, UINT16) — updated live
+    regs[30071] = pv_strings                           # Number of PV strings (static, U16, gain 1)
     regs[30073] = rated_power_kw                       # Rated power in kW (UINT16, gain 1)
 
     # SUN2000 inverter data registers
@@ -237,29 +237,32 @@ class RegisterBank:
 
     def update(self, data: dict):
         """Write latest values into Modbus registers.  None = keep previous."""
-        pv_w    = data.get("pv")
-        batt_w  = data.get("batt")
-        soc_pct = data.get("soc")
-        grid_w  = data.get("grid")
+        pv_w        = data.get("pv")
+        batt_w      = data.get("batt")
+        soc_pct     = data.get("soc")
+        grid_w      = data.get("grid")
+        active_pwr_w = data.get("active_pwr")
 
-        # House consumption via energy balance (batt_w>0=charging, grid_w>0=export):
-        #   house = pv − battery_charge − grid_export
-        # Compute first — used for both 30071 (kW, wall display) and 37101 (W, energy flow).
+        # House consumption: active_power (AC output) ± grid (positive=export, negative=import)
+        #   house = active_power − grid_export  (or + grid_import)
+        active_pwr_for_house = active_pwr_w if active_pwr_w is not None else pv_w
         house_load: Optional[int] = None
-        if None not in (pv_w, batt_w, grid_w):
-            house_load = max(0, int(round(pv_w - batt_w - grid_w)))
+        if None not in (active_pwr_for_house, grid_w):
+            house_load = max(0, int(round(active_pwr_for_house - grid_w)))
         elif data.get("load") is not None:
             house_load = max(0, int(round(data["load"])))
 
         if pv_w is not None:
             v = int(round(pv_w))
-            # Nibe (KTL profile) reads 32080 for PV production — put pv_w there
-            # Also write pv_w to 32064 (MAP0 spec: total DC input) for compatibility
-            self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: DC input from PV [MAP0 #135]
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)       # 32080: pv_w here — Nibe KTL profile reads this
+            self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: total DC input from PV [MAP0 #135]
             self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W
-            # 30071: Nibe reads this for "Produced power" wall display (UINT16, W)
-            self._set_uint16(NIBE_REG_PV_POWER, max(0, v))
+
+        if active_pwr_w is not None:
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(active_pwr_w)))  # 32080: AC active power [MAP0 #146]
+            self._set_uint16(SUNSPEC_M103_W, max(0, int(round(active_pwr_w))) & 0xFFFF)
+        elif pv_w is not None:
+            # fallback: if active_power sensor not configured, use pv_w
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(pv_w)))
 
         if grid_w is not None:
             self._set_int32(HUAWEI_REG_GRID_POWER, int(round(grid_w)))
@@ -438,6 +441,7 @@ class NibeHuaweiBridge:
         # Optional sensors — empty string means disabled
         self._optional_sensors = {}
         opt_map = {
+            "active_pwr":   "active_power",
             "load":         "load_power",
             "daily_kwh":    "daily_yield_kwh",
             "total_kwh":    "total_yield_kwh",
@@ -886,7 +890,8 @@ def main():
         port           = ms.get("port", 5020)
         rated_power_kw = int(opts.get("rated_power_kw", 10))
 
-        regs = build_register_dict(rated_power_kw=rated_power_kw)
+        pv_strings     = int(opts.get("pv_strings", 2))
+        regs = build_register_dict(rated_power_kw=rated_power_kw, pv_strings=pv_strings)
         bank = RegisterBank(regs)
         server = SimpleModbusTcpServer(host, port, unit_id, regs)
 

@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
 description: "Emuluje Huawei SUN2000 cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
-version: "2.6.20"
+version: "2.6.21"
 slug: "nibe_huawei_bridge"
 init: false
 hassio_api: true
@@ -21,8 +21,10 @@ options:
   update_interval: 30
   log_level: "info"
   rated_power_kw: 10
+  pv_strings: 1
   sensors:
     pv_power: "sensor.inverter_input_power"
+    active_power: "sensor.inverter_active_power"
     battery_soc: "sensor.emma_state_of_capacity"
     battery_power: "sensor.emma_battery_charge_discharge_power"
     grid_power: "sensor.emma_feed_in_power"
@@ -73,8 +75,10 @@ schema:
   update_interval: int
   log_level: "list(debug|info|warning|error)"
   rated_power_kw: int
+  pv_strings: int
   sensors:
     pv_power: str
+    active_power: str
     battery_soc: str
     battery_power: str
     grid_power: str
