@@ -345,7 +345,8 @@ class HAClient:
         url = f"{HA_BASE_URL}/api/states/{entity_id}"
         raw = None
         try:
-            async with session.get(url, headers=self._headers) as resp:
+            async with session.get(url, headers=self._headers,
+                                   timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     log.warning(f"get_state {entity_id}: HTTP {resp.status}")
                     return None
@@ -371,7 +372,8 @@ class HAClient:
     ) -> bool:
         url = f"{HA_BASE_URL}/api/services/{domain}/{service}"
         try:
-            async with session.post(url, headers=self._headers, json=data) as resp:
+            async with session.post(url, headers=self._headers, json=data,
+                                    timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 ok = resp.status in (200, 201)
                 if not ok:
                     body = await resp.text()
