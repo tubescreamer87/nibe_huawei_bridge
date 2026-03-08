@@ -231,36 +231,35 @@ class RegisterBank:
         self._r[addr] = _pack_uint16(val)[0]
 
     def write_diagnostic(self):
-        """Write unique fingerprint values to every key register for identification.
-        reg[32080] and reg[32081] are written INDEPENDENTLY (not as INT32) so that
-        reg[32080] stays non-zero — required for Nibe to switch to extended register polling.
+        """Write unique fingerprint values to key registers for identification.
+
+        IMPORTANT: reg[32080], reg[32081] and reg[30071] are intentionally left at 0.
+        Nibe enters extended polling mode only when it reads reg[32080]=[0,0] AND
+        reg[30071]=0 simultaneously (valid SUN2000 standby state). Writing any non-zero
+        value to these registers prevents Nibe from switching to extended mode.
 
         Read the Nibe display and match the shown value to the register below:
-          30071        → 1111   (UINT16)
+          32016        → 3131   (PV1 voltage; Nibe shows 313.1 V)
+          32018        → 3232   (PV2 voltage; Nibe shows 323.2 V)
           32064–32065  → 2222   (INT32 DC input;  Nibe shows 2.222 kW)
-          32080        → 333    (UINT16 high word; Nibe shows 333/100 = 3.33 kW "Produced power")
-          32081        → 4444   (UINT16 low word;  Nibe shows 4444/1000 = 4.444 kW "Inverter capacity")
           37113–37114  → 5555   (INT32 grid power; Nibe shows 5.555 kW)
           37132–37133  → 6666   (INT32 house load; Nibe shows 6.666 kW)
           37760        → 777    (UINT16 SOC ×10;   Nibe shows 77.7 %)
           37765–37766  → 8888   (INT32 batt power; Nibe shows 8.888 kW)
+          32080–32081  → [0,0]  (kept zero so extended mode triggers)
+          30071        → 0      (kept zero so extended mode triggers)
         """
-        # PV string voltages — must be non-zero so Nibe stays in extended polling mode
-        # (when these are 0, Nibe falls back to short-list polling of only 30071+32080)
-        self._r[HUAWEI_REG_PV1_VOLTAGE] = 3131    # 32016: PV1 voltage fingerprint (313.1 V)
-        self._r[HUAWEI_REG_PV2_VOLTAGE] = 3232    # 32018: PV2 voltage fingerprint (323.2 V)
-        self._set_uint16(30071, 1111)
+        self._r[HUAWEI_REG_PV1_VOLTAGE] = 3131    # 32016: PV1 voltage (313.1 V)
+        self._r[HUAWEI_REG_PV2_VOLTAGE] = 3232    # 32018: PV2 voltage (323.2 V)
         self._set_int32(32064,  2222)
-        # Write 32080/32081 independently — keeps high word non-zero as extra safeguard
-        self._r[HUAWEI_REG_ACTIVE_PWR]     = 333   # 32080 → "Produced power" candidate
-        self._r[HUAWEI_REG_ACTIVE_PWR + 1] = 4444  # 32081 → "Inverter capacity" candidate
         self._set_int32(37113,  5555)
         self._set_int32(37132,  6666)
         self._set_uint16(37760, 777)
         self._set_int32(37765,  8888)
-        log.info("DIAGNOSTIC: 32016=3131(313.1V)  32018=3232(323.2V)  30071=1111  "
-                 "32080=333  32081=4444  32064=2222  37113=5555  37132=6666  "
-                 "37760=777(77.7%)  37765=8888")
+        # Leave reg[32080], reg[32081], reg[30071] at 0 — required for extended mode trigger
+        log.info("DIAGNOSTIC: 32016=3131(313.1V)  32018=3232(323.2V)  32064=2222  "
+                 "37113=5555  37132=6666  37760=777(77.7%)  37765=8888  "
+                 "32080=0  32081=0  30071=0  (kept zero for extended mode)")
 
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
@@ -625,6 +624,17 @@ class NibeHuaweiBridge:
             log.info(f"    Heating offset od:{self._heat_thresh_w}W (+{self._heat_offset_val})")
             log.info(f"    Hysteréza:        {self._hysteresis} cyklov")
         log.info("=" * 60)
+
+        # Startup delay — keep all registers at 0 for 15 seconds so Nibe S1255 can
+        # connect and read the standby state (reg[32080]=[0,0] AND reg[30071]=0).
+        # This triggers extended polling mode, which is sticky for the session.
+        # Skip delay in test mode (no Modbus server needed) or when bank is disabled.
+        if self._bank is not None and not self._test_mode:
+            STARTUP_DELAY = 15
+            log.info(f"Startup delay: {STARTUP_DELAY}s — all registers at 0, "
+                     "waiting for Nibe to enter extended polling mode...")
+            await asyncio.sleep(STARTUP_DELAY)
+            log.info("Startup delay done, starting normal polling loop.")
 
         async with aiohttp.ClientSession() as session:
             while True:
