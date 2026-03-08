@@ -283,13 +283,11 @@ class RegisterBank:
             v = int(round(pv_w))
             v16 = max(0, min(0xFFFF, v))
             self._set_int32(HUAWEI_REG_DC_INPUT, v)          # 32064: total DC input [MAP0 #135]
-            # Nibe reads addr=32080 count=2 and uses each word independently:
-            #   reg[32080] (high word) → "Produced power"  — scale: value / 100 = kW  (unit: 10 W)
-            #   reg[32081] (low word)  → "Inverter capacity" — scale: value / 1000 = kW (unit: W)
-            # Standard INT32 packing leaves high word = 0 for values < 65536 W → produced power always 0.
-            # Fix: write pv_w/10 to high word (10 W resolution) and pv_w to low word.
-            self._r[HUAWEI_REG_ACTIVE_PWR]     = max(0, min(0xFFFF, v // 10))  # 32080: produced power (×10 W)
-            self._r[HUAWEI_REG_ACTIVE_PWR + 1] = v16                            # 32081: inverter capacity (W)
+            # Nibe reads [32080,32081] as full INT32 / 1000 for "Inverter capacity".
+            # Must use _set_int32 so the value is correct (high word = 0 for v < 65536).
+            # "Produced power" source is still unknown — being tracked via diagnostic mode.
+            # TODO: once source is identified, write correct value here.
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)        # 32080–32081: INT32, capacity correct
             self._set_uint16(SUNSPEC_M103_W, v16)             # 40084: SunSpec Model 103 W
             self._set_uint16(NIBE_REG_PV_POWER, v16)          # 30071: legacy compat
 
