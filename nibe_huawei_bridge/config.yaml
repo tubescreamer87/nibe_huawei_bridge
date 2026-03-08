@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
 description: "Emuluje Huawei SUN2000 cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
-version: "2.6.23"
+version: "2.6.24"
 slug: "nibe_huawei_bridge"
 init: false
 hassio_api: true
@@ -45,6 +45,9 @@ options:
     port: 5020          # 502 vyžaduje root; použite 5020 ako default
     host: "0.0.0.0"
     unit_id: 1
+  # Diagnostic mode – writes unique fingerprint values to each key register
+  # to identify which Nibe display reads which register. Disable when done.
+  diagnostic_mode: false
   # Test mode – hardcoded values, skips HA sensor polling
   test_mode:
     enabled: false
@@ -91,6 +94,7 @@ schema:
     pv2_voltage: str
     battery_max_charge_power: str
     battery_max_discharge_power: str
+  diagnostic_mode: bool
   modbus_server:
     enabled: bool
     port: int

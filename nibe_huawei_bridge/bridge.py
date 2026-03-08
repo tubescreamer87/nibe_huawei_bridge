@@ -230,6 +230,27 @@ class RegisterBank:
     def _set_uint16(self, addr: int, val: int):
         self._r[addr] = _pack_uint16(val)[0]
 
+    def write_diagnostic(self):
+        """Write unique fingerprint values to every key register for identification.
+        Read the Nibe display and match the value to the register below:
+          30071  → 1111   (UINT16, "Produced power" candidate)
+          32064  → 2222   (INT32 total DC input)
+          32080  → 3333   (INT32 active power)
+          37113  → 4444   (INT32 grid power)
+          37132  → 5555   (INT32 house/smart-meter phase A)
+          37760  → 666    (UINT16 SOC ×10 = 66.6 %)
+          37765  → 7777   (INT32 battery power)
+        """
+        self._set_uint16(30071, 1111)
+        self._set_int32(32064,  2222)
+        self._set_int32(32080,  3333)
+        self._set_int32(37113,  4444)
+        self._set_int32(37132,  5555)
+        self._set_uint16(37760, 666)
+        self._set_int32(37765,  7777)
+        log.info("DIAGNOSTIC: registers loaded — 30071=1111 32064=2222 32080=3333 "
+                 "37113=4444 37132=5555 37760=666(66.6%) 37765=7777")
+
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
         self._r[addr] = (clamped >> 16) & 0xFFFF
@@ -456,6 +477,8 @@ class NibeHuaweiBridge:
             if entity_id:
                 self._optional_sensors[key] = entity_id
 
+        self._diagnostic_mode = opts.get("diagnostic_mode", False)
+
         tm = opts.get("test_mode", {})
         self._test_mode    = tm.get("enabled", False)
         self._test_pv      = float(tm.get("pv_power",      0))
@@ -592,6 +615,12 @@ class NibeHuaweiBridge:
         async with aiohttp.ClientSession() as session:
             while True:
                 try:
+                    if self._diagnostic_mode:
+                        if self._bank is not None:
+                            self._bank.write_diagnostic()
+                        await asyncio.sleep(self._interval)
+                        continue
+
                     if self._test_mode:
                         data = {
                             "pv": self._test_pv, "batt": self._test_batt,
