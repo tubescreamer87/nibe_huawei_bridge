@@ -245,7 +245,8 @@ class RegisterBank:
           32016        → 3131   (PV1 voltage;       Nibe shows 313.1 V)
           32018        → 3232   (PV2 voltage;       Nibe shows 323.2 V)
           32064–32065  → 2222   (INT32 DC input;    Nibe shows 2.222 kW)
-          32080–32081  → 3333   (INT32 active pwr;  Nibe shows 3.333 kW — "Produced power" / "Inverter capacity")
+          32080        → 111    (UINT16 ×10W;       Nibe "Produced power"    = 111×10W = 1110W = 1.11 kW)
+          32081        → 4444   (UINT16 W;          Nibe "Inverter capacity" = 4444/1000 = 4.444 kW)
           37113–37114  → 5555   (INT32 grid power;  Nibe shows 5.555 kW)
           37132–37133  → 6666   (INT32 house load;  Nibe shows 6.666 kW)
           37760        → 777    (UINT16 SOC ×10;    Nibe shows 77.7 %)
@@ -255,14 +256,18 @@ class RegisterBank:
         self._r[HUAWEI_REG_PV1_VOLTAGE] = 3131    # 32016: PV1 voltage (313.1 V)
         self._r[HUAWEI_REG_PV2_VOLTAGE] = 3232    # 32018: PV2 voltage (323.2 V)
         self._set_int32(32064,  2222)
-        self._set_int32(HUAWEI_REG_ACTIVE_PWR, 3333)  # 32080–32081; must be non-zero or Nibe hides all values
+        # Write 32080/32081 INDEPENDENTLY (not as INT32) — they are two separate UINT16 fields:
+        #   reg[32080] × 10W → "Produced power"    (expected: 111×10W = 1.11 kW on Nibe display)
+        #   reg[32081] / 1000 → "Inverter capacity" (expected: 4444/1000 = 4.444 kW on Nibe display)
+        self._r[HUAWEI_REG_ACTIVE_PWR]     = 111   # 32080: 111 × 10W = 1110W = 1.11 kW
+        self._r[HUAWEI_REG_ACTIVE_PWR + 1] = 4444  # 32081: 4444 W = 4.444 kW
         self._set_int32(37113,  5555)
         self._set_int32(37132,  6666)
         self._set_uint16(37760, 777)
         self._set_int32(37765,  8888)
-        log.info("DIAGNOSTIC: 30071=1111  32016=3131(313.1V)  32018=3232(323.2V)  "
-                 "32064=2222  32080=3333(3.333kW)  37113=5555  37132=6666  "
-                 "37760=777(77.7%)  37765=8888")
+        log.info("DIAGNOSTIC: 30071=1111  32016=3131(313.1V)  32018=3232(323.2V)  32064=2222  "
+                 "32080=111(→1.11kW prod)  32081=4444(→4.444kW cap)  "
+                 "37113=5555  37132=6666  37760=777(77.7%)  37765=8888")
 
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
@@ -290,11 +295,12 @@ class RegisterBank:
             v = int(round(pv_w))
             v16 = max(0, min(0xFFFF, v))
             self._set_int32(HUAWEI_REG_DC_INPUT, v)          # 32064: total DC input [MAP0 #135]
-            # Nibe reads [32080,32081] as full INT32 / 1000 for "Inverter capacity".
-            # Must use _set_int32 so the value is correct (high word = 0 for v < 65536).
-            # "Produced power" source is still unknown — being tracked via diagnostic mode.
-            # TODO: once source is identified, write correct value here.
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)        # 32080–32081: INT32, capacity correct
+            # Nibe reads reg[32080] and reg[32081] as TWO INDEPENDENT UINT16s:
+            #   "Produced power"    = reg[32080] × 10 W  (10W resolution)
+            #   "Inverter capacity" = reg[32081] / 1000 kW  (1W resolution)
+            # Writing independently (NOT as INT32) is required to make both correct.
+            self._r[HUAWEI_REG_ACTIVE_PWR]     = max(0, min(0xFFFF, v // 10))  # 32080: v in 10W units
+            self._r[HUAWEI_REG_ACTIVE_PWR + 1] = v16                            # 32081: v in W
             self._set_uint16(SUNSPEC_M103_W, v16)             # 40084: SunSpec Model 103 W
             self._set_uint16(NIBE_REG_PV_POWER, v16)          # 30071: legacy compat
 
