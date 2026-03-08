@@ -258,12 +258,8 @@ class RegisterBank:
             self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W
             self._set_uint16(NIBE_REG_PV_POWER, max(0, v))  # 30071: PV power W (old spec, Nibe "Produced power")
 
-        if active_pwr_w is not None:
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(active_pwr_w)))  # 32080: AC active power [MAP0 #146]
-            self._set_uint16(SUNSPEC_M103_W, max(0, int(round(active_pwr_w))) & 0xFFFF)
-        elif pv_w is not None:
-            # fallback: if active_power sensor not configured, use pv_w
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(pv_w)))
+        if pv_w is not None:
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(pv_w)))    # 32080: Nibe reads as "Inverter capacity"
 
         if grid_w is not None:
             self._set_int32(HUAWEI_REG_GRID_POWER, int(round(grid_w)))
