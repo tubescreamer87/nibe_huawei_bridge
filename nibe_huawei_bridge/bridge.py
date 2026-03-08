@@ -245,17 +245,22 @@ class RegisterBank:
           37760        → 777    (UINT16 SOC ×10;   Nibe shows 77.7 %)
           37765–37766  → 8888   (INT32 batt power; Nibe shows 8.888 kW)
         """
+        # PV string voltages — must be non-zero so Nibe stays in extended polling mode
+        # (when these are 0, Nibe falls back to short-list polling of only 30071+32080)
+        self._r[HUAWEI_REG_PV1_VOLTAGE] = 3131    # 32016: PV1 voltage fingerprint (313.1 V)
+        self._r[HUAWEI_REG_PV2_VOLTAGE] = 3232    # 32018: PV2 voltage fingerprint (323.2 V)
         self._set_uint16(30071, 1111)
         self._set_int32(32064,  2222)
-        # Write 32080/32081 independently — keeps high word non-zero for extended polling
-        self._r[HUAWEI_REG_ACTIVE_PWR]     = 333   # 32080 high word → "Produced power"
-        self._r[HUAWEI_REG_ACTIVE_PWR + 1] = 4444  # 32081 low word  → "Inverter capacity"
+        # Write 32080/32081 independently — keeps high word non-zero as extra safeguard
+        self._r[HUAWEI_REG_ACTIVE_PWR]     = 333   # 32080 → "Produced power" candidate
+        self._r[HUAWEI_REG_ACTIVE_PWR + 1] = 4444  # 32081 → "Inverter capacity" candidate
         self._set_int32(37113,  5555)
         self._set_int32(37132,  6666)
         self._set_uint16(37760, 777)
         self._set_int32(37765,  8888)
-        log.info("DIAGNOSTIC: 30071=1111  32080=333(3.33kW)  32081=4444(4.444kW)  "
-                 "32064=2222  37113=5555  37132=6666  37760=777(77.7%)  37765=8888")
+        log.info("DIAGNOSTIC: 32016=3131(313.1V)  32018=3232(323.2V)  30071=1111  "
+                 "32080=333  32081=4444  32064=2222  37113=5555  37132=6666  "
+                 "37760=777(77.7%)  37765=8888")
 
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
