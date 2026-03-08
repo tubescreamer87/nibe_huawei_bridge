@@ -275,12 +275,17 @@ class RegisterBank:
 
         if pv_w is not None:
             v = int(round(pv_w))
-            self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: total DC input from PV [MAP0 #135]
-            self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W
-            self._set_uint16(NIBE_REG_PV_POWER, max(0, v))  # 30071: PV power W (old spec, Nibe "Produced power")
-
-        if pv_w is not None:
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(pv_w)))    # 32080: Nibe reads as "Inverter capacity"
+            v16 = max(0, min(0xFFFF, v))
+            self._set_int32(HUAWEI_REG_DC_INPUT, v)          # 32064: total DC input [MAP0 #135]
+            # Nibe reads addr=32080 count=2 and uses:
+            #   reg[32080] (high word) → "Produced power"
+            #   reg[32081] (low word)  → "Inverter capacity"
+            # _pack_int32 puts 0 in the high word for values < 65536 → "Produced power" always 0.
+            # Fix: write pv_w to BOTH words so both displays show the correct value.
+            self._r[HUAWEI_REG_ACTIVE_PWR]     = v16         # 32080 high word → "Produced power"
+            self._r[HUAWEI_REG_ACTIVE_PWR + 1] = v16         # 32081 low word  → "Inverter capacity"
+            self._set_uint16(SUNSPEC_M103_W, v16)             # 40084: SunSpec Model 103 W
+            self._set_uint16(NIBE_REG_PV_POWER, v16)          # 30071: legacy compat
 
         if grid_w is not None:
             self._set_int32(HUAWEI_REG_GRID_POWER, int(round(grid_w)))
