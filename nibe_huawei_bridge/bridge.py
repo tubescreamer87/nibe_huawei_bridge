@@ -46,8 +46,8 @@ HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import)           
 HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % × 10 (combined ESU SOC)              [MAP0 spec §3.2 #33]
 HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge, combined ESU) [MAP0 spec §3.2 #37]
 
-# SUN2000 device info registers
-NIBE_REG_PV_STRINGS   = 30071  # UINT16, 1 reg, gain 1 — number of PV strings (static, not power)
+# SUN2000 device info registers (older Modbus spec — used by Nibe S1255)
+NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — PV power (old spec; V3.0 redefines as #PV strings, but Nibe reads this as produced power)
 NIBE_REG_RATED_POWER  = 30073  # UINT16, 1 reg, kW — rated power of inverter
 NIBE_REG_BATT_MAX_CHG = 37046  # UINT32, 2 regs, W — max charge power  [MAP0 spec §3.2 #16]
 NIBE_REG_BATT_MAX_DIS = 37048  # UINT32, 2 regs, W — max discharge power [MAP0 spec §3.2 #17]
@@ -132,7 +132,7 @@ def _str_to_regs(s: str, num_regs: int) -> list[int]:
     return [(ord(padded[i]) << 8) | ord(padded[i + 1]) for i in range(0, num_regs * 2, 2)]
 
 
-def build_register_dict(rated_power_kw: int = 10, pv_strings: int = 1) -> dict:
+def build_register_dict(rated_power_kw: int = 10) -> dict:
     """
     Build a plain dict[int, int] covering all known SUN2000 and SunSpec register
     addresses.  Missing addresses return 0 at read time (no IllegalAddress).
@@ -153,7 +153,7 @@ def build_register_dict(rated_power_kw: int = 10, pv_strings: int = 1) -> dict:
     for addr in range(30065, 30071):
         regs[addr] = 0                                 # 30065-30069: reserved/status
     regs[30070] = 1004                                 # MAP0 model ID
-    regs[30071] = pv_strings                           # Number of PV strings (static, U16, gain 1)
+    regs[30071] = 0                                    # PV power W (old Modbus spec; Nibe reads as "Produced power") — updated live
     regs[30073] = rated_power_kw                       # Rated power in kW (UINT16, gain 1)
 
     # SUN2000 inverter data registers
@@ -256,6 +256,7 @@ class RegisterBank:
             v = int(round(pv_w))
             self._set_int32(HUAWEI_REG_DC_INPUT, v)         # 32064: total DC input from PV [MAP0 #135]
             self._set_uint16(SUNSPEC_M103_W, max(0, v) & 0xFFFF)       # 40084: SunSpec Model 103 W
+            self._set_uint16(NIBE_REG_PV_POWER, max(0, v))  # 30071: PV power W (old spec, Nibe "Produced power")
 
         if active_pwr_w is not None:
             self._set_int32(HUAWEI_REG_ACTIVE_PWR, int(round(active_pwr_w)))  # 32080: AC active power [MAP0 #146]
@@ -890,8 +891,7 @@ def main():
         port           = ms.get("port", 5020)
         rated_power_kw = int(opts.get("rated_power_kw", 10))
 
-        pv_strings     = int(opts.get("pv_strings", 2))
-        regs = build_register_dict(rated_power_kw=rated_power_kw, pv_strings=pv_strings)
+        regs = build_register_dict(rated_power_kw=rated_power_kw)
         bank = RegisterBank(regs)
         server = SimpleModbusTcpServer(host, port, unit_id, regs)
 
