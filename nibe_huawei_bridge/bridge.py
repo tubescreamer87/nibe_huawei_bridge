@@ -295,12 +295,13 @@ class RegisterBank:
             v = int(round(pv_w))
             v16 = max(0, min(0xFFFF, v))
             self._set_int32(HUAWEI_REG_DC_INPUT, v)          # 32064: total DC input [MAP0 #135]
-            # Nibe reads reg[32080] and reg[32081] as TWO INDEPENDENT UINT16s:
-            #   "Produced power"    = reg[32080] × 10 W  (10W resolution)
-            #   "Inverter capacity" = reg[32081] / 1000 kW  (1W resolution)
-            # Writing independently (NOT as INT32) is required to make both correct.
-            self._r[HUAWEI_REG_ACTIVE_PWR]     = max(0, min(0xFFFF, v // 10))  # 32080: v in 10W units
-            self._r[HUAWEI_REG_ACTIVE_PWR + 1] = v16                            # 32081: v in W
+            # MAP0 spec: reg[32080-32081] is INT32, unit=W. Nibe also reads this pair as
+            # INT32 inside the large addr=32016 count=118 block → "Capacity" = INT32/1000 kW.
+            # Writing reg[32080]=pv_w//10 (old UINT16 encoding) caused the high word to be
+            # non-zero, producing absurd Capacity values (e.g. 1114 kW when pv=170 W).
+            # Correct encoding: _set_int32 → reg[32080]=0 (hi), reg[32081]=pv_w (lo).
+            # "Produced power" on the Nibe display is driven by reg[30071]=pv_w (written below).
+            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)          # 32080(hi=0)+32081(lo=v); INT32/1000=pv_kW
             self._set_uint16(SUNSPEC_M103_W, v16)             # 40084: SunSpec Model 103 W
             self._set_uint16(NIBE_REG_PV_POWER, v16)          # 30071: legacy compat
 
