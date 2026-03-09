@@ -368,7 +368,7 @@ class RegisterBank:
 
         log.debug(
             f"RegisterBank updated: pv={pv_w} grid={grid_w} soc={soc_pct} batt={batt_w} "
-            f"daily={daily} total={total}"
+            f"daily={daily}"
         )
 
 
