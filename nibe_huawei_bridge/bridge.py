@@ -322,9 +322,12 @@ class RegisterBank:
         if batt_max_dis is not None:
             self._set_uint32(NIBE_REG_BATT_MAX_DIS, int(round(batt_max_dis)))  # 37048, UINT32
 
-        # Write house load to smart meter phase A active power (37132-37133).
-        # Nibe polls 37132:6 every cycle and uses these for house consumption display.
+        # Nibe reads reg[32106-32107] as UINT32/100 and displays it as "Consumption kW".
+        # Scale: house_load W // 10 → stored as 10W units → /100 = kW on display.
+        # Example: 5240W // 10 = 524 → 524/100 = 5.24 kW shown as "Consumption".
+        # reg[37132] is also written as INT32 W for other Nibe internal use.
         if house_load is not None:
+            self._set_uint32(HUAWEI_REG_TOTAL_YIELD, max(0, house_load // 10))  # 32106: Consumption display
             self._set_int32(37132, house_load)
 
         # PV string DC voltages — MBSA V1: 32016=VPV-1, 32018=VPV-2 (gain 10 → e.g. 350.5V → 3505)
@@ -338,9 +341,9 @@ class RegisterBank:
         if daily is not None:
             self._set_uint32(HUAWEI_REG_DAILY_YIELD, int(round(daily * 100)))
 
-        total = data.get("total_kwh")
-        if total is not None:
-            self._set_uint32(HUAWEI_REG_TOTAL_YIELD, int(round(total * 100)))
+        # total_kwh (total lifetime yield) intentionally NOT written to reg[32106]
+        # because Nibe uses that register for "Consumption" display (house load).
+        # total_kwh sensor can remain configured but is unused in register writes.
 
         export_kwh = data.get("export_kwh")
         if export_kwh is not None:
