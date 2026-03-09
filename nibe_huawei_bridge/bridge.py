@@ -166,7 +166,7 @@ def build_register_dict(rated_power_kw: int = 10) -> dict:
     regs[32080] = 0;  regs[32081] = 0                 # AC active power output (INT32, W) — updated live
     regs[32084] = 1000                                 # Power factor (INT16, gain 1000 → 1.000)
     regs[32085] = 5000                                 # Grid frequency (UINT16, Hz×100 → 50.00 Hz)
-    regs[32089] = 512                                  # Running state: grid-connected/running
+    regs[32089] = 2                                    # Running state: 0x0002 = grid-connected normally
 
     # Smart meter data registers [MAP0 spec §3.1 #261-281]
     regs[37100] = 1                                    # Meter status: 1=normal
@@ -361,7 +361,10 @@ class RegisterBank:
         # Power factor (INT16, gain 1000 → e.g. 0.95 → 950)
         pf = data.get("pf")
         if pf is not None:
-            self._set_uint16(HUAWEI_REG_POWER_FACTOR, int(round(pf * 1000)) & 0xFFFF)
+            # Clamp to valid range [0, 1000] — negative or >1 values from sensor are invalid
+            # and could cause Nibe to reject all inverter data
+            pf_reg = max(0, min(1000, int(round(abs(pf) * 1000))))
+            self._set_uint16(HUAWEI_REG_POWER_FACTOR, pf_reg)
 
         # Grid frequency: hardcode 50.00 Hz (UINT16, gain 100 → 5000)
         self._set_uint16(HUAWEI_REG_GRID_FREQ, 5000)
