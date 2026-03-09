@@ -360,11 +360,12 @@ class RegisterBank:
 
         # Power factor (INT16, gain 1000 → e.g. 0.95 → 950)
         pf = data.get("pf")
-        if pf is not None:
-            # Clamp to valid range [0, 1000] — negative or >1 values from sensor are invalid
-            # and could cause Nibe to reject all inverter data
-            pf_reg = max(0, min(1000, int(round(abs(pf) * 1000))))
-            self._set_uint16(HUAWEI_REG_POWER_FACTOR, pf_reg)
+        if pf is not None and abs(pf) >= 0.5:
+            # Only update if sensor returns a plausible inverter power factor (≥0.5).
+            # Values like 0.03 indicate a unit mismatch or bad sensor — skip and keep
+            # the default 1000 (1.000) from build_register_dict, otherwise Nibe
+            # rejects all inverter data and shows 0 production.
+            self._set_uint16(HUAWEI_REG_POWER_FACTOR, min(1000, int(round(abs(pf) * 1000))))
 
         # Grid frequency: hardcode 50.00 Hz (UINT16, gain 100 → 5000)
         self._set_uint16(HUAWEI_REG_GRID_FREQ, 5000)
