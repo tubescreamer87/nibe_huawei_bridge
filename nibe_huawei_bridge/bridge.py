@@ -645,8 +645,11 @@ class NibeHuaweiBridge:
         # Startup delay — keep all registers at 0 for 15 seconds so Nibe S1255 can
         # connect and read the standby state (reg[32080]=[0,0] AND reg[30071]=0).
         # This triggers extended polling mode, which is sticky for the session.
-        # Skip delay in test mode (no Modbus server needed) or when bank is disabled.
-        if self._bank is not None and not self._test_mode:
+        # Run the zero-hold whenever the Modbus server is active — including test
+        # mode. Test mode still serves Nibe over Modbus, and skipping the standby
+        # state meant Nibe never entered extended polling mode, so battery and
+        # smart-meter registers were never read (only PV showed up). v2.6.39.
+        if self._bank is not None:
             STARTUP_DELAY = 15
             log.info(f"Startup delay: {STARTUP_DELAY}s — all registers at 0, "
                      "waiting for Nibe to enter extended polling mode...")
