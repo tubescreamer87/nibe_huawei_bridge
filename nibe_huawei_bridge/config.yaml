@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
-description: "Emuluje Huawei SUN2000 cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
-version: "2.6.39"
+description: "Emuluje Huawei EMMA (SmartHEMS) cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
+version: "2.7.0"
 slug: "nibe_huawei_bridge"
 init: false
 hassio_api: true
@@ -15,13 +15,16 @@ arch:
 ports:
   5020/tcp: 5020
 ports_description:
-  5020/tcp: "Modbus TCP (SUN2000 emulácia pre Nibe S1255)"
+  5020/tcp: "Modbus TCP (EMMA emulácia pre Nibe S1255)"
 
 options:
   update_interval: 30
   log_level: "info"
   rated_power_kw: 10
   sensors:
+    # pv_power → EMMA reg 30354 (PV output power). Default uses the reliable DC-input
+    # sensor; switch to "sensor.emma_pv_output_power" for strict 1:1 if your firmware
+    # reports it correctly in daylight.
     pv_power: "sensor.inverter_input_power"
     active_power: "sensor.inverter_active_power"
     battery_soc: "sensor.emma_state_of_capacity"
@@ -33,18 +36,13 @@ options:
     total_yield_kwh: "sensor.emma_inverter_total_energy_yield"
     grid_export_today_kwh: "sensor.emma_feed_in_to_grid_today"
     grid_import_today_kwh: "sensor.emma_supply_from_grid_today"
-    inverter_temp: "sensor.inverter_internal_temperature"
-    power_factor: "sensor.emma_ucinnik_3"
-    pv1_voltage: "sensor.inverter_pv_1_voltage"
-    pv2_voltage: "sensor.inverter_pv_2_voltage"
-    battery_max_charge_power: "sensor.batteries_maximum_charge_power"
-    battery_max_discharge_power: "sensor.batteries_maximum_discharge_power"
-  # Modbus TCP server – Nibe S1255 sa pripojí ako master a číta SUN2000 registre
+  # Modbus TCP server – Nibe S1255 sa pripojí ako master a číta EMMA registre.
+  # EMMA odpovedá na logical-device-id (unit) = 0.
   modbus_server:
     enabled: true
     port: 5020          # 502 vyžaduje root; použite 5020 ako default
     host: "0.0.0.0"
-    unit_id: 1
+    unit_id: 0
   # Diagnostic mode – writes unique fingerprint values to each key register
   # to identify which Nibe display reads which register. Disable when done.
   diagnostic_mode: false
@@ -54,13 +52,13 @@ options:
     pv_power: 0          # W – simulated PV production
     battery_soc: 80      # % – simulated battery state of charge
     battery_power: -500  # W – positive=charging, negative=discharging
-    grid_power: -200     # W – positive=export, negative=import
-  # MITM proxy – transparentne preposiela Modbus TCP od Nibe na skutočný invertor a loguje registre
+    grid_power: 200      # W – positive=export, negative=import
+  # MITM proxy – transparentne preposiela Modbus TCP od Nibe na skutočnú EMMA a loguje registre
   mitm_mode:
     enabled: false
     upstream_host: "192.168.68.79"
     upstream_port: 502
-    upstream_unit_id: 3   # unit ID skutočného invertora
+    upstream_unit_id: 0   # logical-device-id skutočnej EMMA
   # Surplus logika - riadenie TÚV a heating offsetu podľa prebytku (fallback)
   surplus_control:
     enabled: false
@@ -88,12 +86,6 @@ schema:
     total_yield_kwh: str
     grid_export_today_kwh: str
     grid_import_today_kwh: str
-    inverter_temp: str
-    power_factor: str
-    pv1_voltage: str
-    pv2_voltage: str
-    battery_max_charge_power: str
-    battery_max_discharge_power: str
   diagnostic_mode: bool
   modbus_server:
     enabled: bool

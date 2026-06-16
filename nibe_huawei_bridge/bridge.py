@@ -2,11 +2,11 @@
 """
 Nibe-Huawei Bridge – Home Assistant Addon
 ==========================================
-Emuluje Huawei SUN2000 inverter cez Modbus TCP.
+Emuluje Huawei EMMA (SmartHEMS) cez Modbus TCP.
 Nibe S1255 sa pripojí priamo ako Modbus master a číta PV/batériové/sieťové dáta.
 
 Dva režimy (môžu bežať súbežne):
-  1. modbus_server – embedded Modbus TCP slave server mimiking SUN2000
+  1. modbus_server – embedded Modbus TCP slave server mimiking EMMA (unit/logical-device-id 0)
      (Nibe číta registre priamo, bez HA Modbus integrácie)
   2. surplus_control – vypočítava prebytok a priamo nastavuje HW comfort mode
      a heating offset cez HA modbus.write_register (fallback)
@@ -39,51 +39,47 @@ log = logging.getLogger("nibe-huawei")
 # Register constants
 # ---------------------------------------------------------------------------
 
-# Huawei SUN2000MA (MAP0) Modbus registers — MBSA V3.0 spec, model SUN2000_10K_MAP0
-HUAWEI_REG_DC_INPUT   = 32064  # INT32, 2 regs, kW×1000 = W (total DC input from PV)  [MAP0 spec §3.1 #135]
-HUAWEI_REG_ACTIVE_PWR = 32080  # INT32, 2 regs, kW×1000 = W (AC output active power)  [MAP0 spec §3.1 #146]
-HUAWEI_REG_GRID_POWER = 37113  # INT32, 2 regs, W (+export / -import)                  [MAP0 spec §3.1 #267]
-HUAWEI_REG_BATT_SOC   = 37760  # UINT16, 1 reg, % × 10 (combined ESU SOC)              [MAP0 spec §3.2 #33]
-HUAWEI_REG_BATT_POWER = 37765  # INT32, 2 regs, W (+charge / -discharge, combined ESU) [MAP0 spec §3.2 #37]
+# Huawei EMMA (SmartHEMS) Modbus registers — captured 1:1 from a real EMMA-A02
+# (logical-device-id/unit = 0, TCP port 502) and cross-checked against the official
+# "SmartHEMS V100R024C00 MODBUS Interface Definitions" spec and wlcrs/huawei-solar-lib.
+# Power registers are plain watts (spec "kW × gain 1000" == raw W); SOC is % × 100;
+# energy counters are kWh × 100; ESS capacities are kWh × 1000.
 
-# SUN2000 device info registers (older Modbus spec — used by Nibe S1255)
-NIBE_REG_PV_POWER     = 30071  # UINT16, 1 reg, W — PV power (old spec; V3.0 redefines as #PV strings, but Nibe reads this as produced power)
-NIBE_REG_RATED_POWER  = 30073  # UINT16, 1 reg, kW — rated power of inverter
-NIBE_REG_BATT_MAX_CHG = 37046  # UINT32, 2 regs, W — max charge power  [MAP0 spec §3.2 #16]
-NIBE_REG_BATT_MAX_DIS = 37048  # UINT32, 2 regs, W — max discharge power [MAP0 spec §3.2 #17]
+# Characteristic data (strings)
+EMMA_REG_OFFERING_NAME = 30000  # STRING, 15 regs — "SmartHEMS"
+EMMA_REG_SN            = 30015  # STRING, 10 regs — serial number
+EMMA_REG_SOFTWARE_VER  = 30035  # STRING, 15 regs — "SmartHEMS V100R025C00SPC131"
+EMMA_REG_MODEL         = 30222  # STRING, 20 regs — "EMMA-A02"
 
-# Battery unit 1 registers [MAP0 spec §3.2]
-HUAWEI_REG_STORAGE_STATUS = 37000  # UINT16, 1 reg — 0=offline,1=standby,2=running,3=fault,4=sleep
-HUAWEI_REG_STORAGE_POWER  = 37001  # INT32, 2 regs, W — unit 1 charge/discharge power (+charge/-discharge)
-HUAWEI_REG_STORAGE_SOC    = 37004  # UINT16, 1 reg, % × 10 — unit 1 SOC
-HUAWEI_REG_ESU_STATUS     = 37762  # UINT16, 1 reg — ESU running status: 0=offline,1=standby,2=running [MAP0 §3.2 #34]
+# Live sampled data
+EMMA_REG_PV_POWER         = 30354  # U32, W  — PV output power
+EMMA_REG_LOAD_POWER       = 30356  # U32, W  — house load power
+EMMA_REG_FEED_IN_POWER    = 30358  # I32, W  — grid power (+ = export / − = import)
+EMMA_REG_BATT_POWER       = 30360  # I32, W  — battery (+ = charge / − = discharge)
+EMMA_REG_INV_RATED_POWER  = 30362  # U32, W  — inverter rated power
+EMMA_REG_INV_ACTIVE_POWER = 30364  # I32, W  — inverter active power
+EMMA_REG_SOC              = 30368  # U16, % × 100 — combined ESS state of capacity
+EMMA_REG_ESS_CHG_CAP      = 30369  # U32, kWh × 1000 — ESS chargeable capacity
+EMMA_REG_ESS_DIS_CAP      = 30371  # U32, kWh × 1000 — ESS dischargeable capacity
+EMMA_REG_BACKUP_SOC       = 30373  # U16, % × 100 — backup power SOC
 
-# Smart meter status [MAP0 spec §3.1]
-HUAWEI_REG_METER_STATUS   = 37100  # UINT16, 1 reg — 0=offline, 1=normal
+# Energy counters (kWh × 100)
+EMMA_REG_ENERGY_CHARGED_TODAY    = 30306  # U32
+EMMA_REG_ENERGY_DISCHARGED_TODAY = 30312  # U32
+EMMA_REG_RATED_ESS_CAPACITY      = 30322  # U32, kWh × 1000
+EMMA_REG_CONSUMPTION_TODAY       = 30324  # U32
+EMMA_REG_FEED_IN_TODAY           = 30330  # U32 — feed-in to grid today
+EMMA_REG_SUPPLY_FROM_GRID_TODAY  = 30336  # U32 — supply from grid today
+EMMA_REG_INV_YIELD_TODAY         = 30342  # U32 — inverter energy yield today
+EMMA_REG_INV_TOTAL_YIELD         = 30344  # U32 — inverter total energy yield
+EMMA_REG_PV_YIELD_TODAY          = 30346  # U32 — PV yield today
 
-# PV string DC inputs [MAP0 spec §3.1]
-HUAWEI_REG_PV1_VOLTAGE = 32016  # UINT16, gain 10, V — PV string 1 DC voltage
-HUAWEI_REG_PV2_VOLTAGE = 32018  # UINT16, gain 10, V — PV string 2 DC voltage
+# Device management
+EMMA_REG_NUM_INVERTERS = 30801  # U16
+EMMA_REG_NUM_CHARGERS  = 30804  # U16
 
-# Inverter output registers [MAP0 spec §3.1]
-HUAWEI_REG_TEMPERATURE  = 32087  # INT16, gain 10, °C
-HUAWEI_REG_POWER_FACTOR = 32084  # INT16, gain 1000
-HUAWEI_REG_GRID_FREQ    = 32085  # UINT16, gain 100, Hz
-
-# Energy counters [MAP0 spec §3.1]
-HUAWEI_REG_TOTAL_YIELD = 32106  # UINT32, gain 100, kWh (lifetime)
-HUAWEI_REG_DAILY_YIELD = 32114  # UINT32, gain 100, kWh (today)
-
-# Smart meter energy counters [MAP0 spec §3.1 #271 / #272]
-HUAWEI_REG_GRID_EXPORT = 37119  # INT32, gain 100, kWh (positive active energy = exported)
-HUAWEI_REG_GRID_IMPORT = 37121  # INT32, gain 100, kWh (reverse active energy = imported)
-
-# SunSpec magic – populated so Nibe finds either proprietary or SunSpec regs
-SUNSPEC_BASE          = 40000  # "SunS" identifier (2 regs)
-SUNSPEC_MODEL1_BASE   = 40002  # Model 1 (Common), length 66
-SUNSPEC_MODEL103_BASE = 40070  # Model 103 (Three-phase inverter), length 50
-SUNSPEC_M103_W        = 40084  # Model 103 AC Power (INT16, offset 14 from base 40070, W with W_SF)
-SUNSPEC_M103_W_SF     = 40085  # Model 103 W_SF scale factor (INT16, exponent; 0 = ×1 = watts)
+# Public registers
+EMMA_REG_DEVICE_CONN_STATUS = 65534  # U16 — device connection status
 
 # Nibe registers used by surplus_control (unchanged)
 REG_HW_COMFORT_MODE = 47041   # 0=ECO, 1=Normal, 2=Luxury
@@ -123,7 +119,7 @@ def _pack_uint16(value: int) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
-# RegisterBank – plain dict + helpers for SUN2000 register layout
+# RegisterBank – plain dict + helpers for the EMMA register layout
 # ---------------------------------------------------------------------------
 
 def _str_to_regs(s: str, num_regs: int) -> list[int]:
@@ -134,85 +130,48 @@ def _str_to_regs(s: str, num_regs: int) -> list[int]:
 
 def build_register_dict(rated_power_kw: int = 10) -> dict:
     """
-    Build a plain dict[int, int] covering all known SUN2000 and SunSpec register
-    addresses.  Missing addresses return 0 at read time (no IllegalAddress).
+    Build a plain dict[int, int] emulating a Huawei EMMA-A02 (SmartHEMS).
+    Missing addresses return 0 at read time (no IllegalAddress).  Live values are
+    filled in by RegisterBank.update(); identity/static values are set here from a
+    register dump of the user's real EMMA.
     """
     regs: dict[int, int] = {}
 
-    # Device identification — exact MAP0 spec layout (mirrors real SUN2000-10K-MAP0 inverter)
-    for i, val in enumerate(_str_to_regs("SUN2000-10K-MAP0", 15)):
-        regs[30000 + i] = val                          # 30000-30014: Model name (STRING30, 15 regs)
-    for i, val in enumerate(_str_to_regs("BT2470706907", 10)):
-        regs[30015 + i] = val                          # 30015-30024: Serial number (STRING20, 10 regs)
-    for addr in range(30025, 30035):
-        regs[addr] = 0                                 # 30025-30034: reserved
-    for i, val in enumerate(_str_to_regs("V200R024D02", 15)):
-        regs[30035 + i] = val                          # 30035-30049: Firmware version (STRING30, 15 regs)
-    for i, val in enumerate(_str_to_regs("V200R024C00SPC108", 15)):
-        regs[30050 + i] = val                          # 30050-30064: Software version (STRING30, 15 regs)
-    for addr in range(30065, 30071):
-        regs[addr] = 0                                 # 30065-30069: reserved/status
-    regs[30070] = 1004                                 # MAP0 model ID
-    regs[30071] = 0                                    # PV power W (old Modbus spec; Nibe reads as "Produced power") — updated live
-    regs[30073] = rated_power_kw                       # Rated power in kW (UINT16, gain 1)
+    def _put_u32(addr: int, value: int):
+        v = max(0, min(0xFFFFFFFF, value))
+        regs[addr] = (v >> 16) & 0xFFFF
+        regs[addr + 1] = v & 0xFFFF
 
-    # SUN2000 inverter data registers
-    regs[32000] = 6                                    # Device state: grid-connected + battery active
-    for addr in range(32008, 32011):
-        regs[addr] = 0
-    for addr in range(32016, 32200):                   # DC strings + AC outputs + misc
-        regs[addr] = 0
-    regs[32064] = 0;  regs[32065] = 0                 # Total DC input from PV (INT32, W) — updated live
-    regs[32080] = 0;  regs[32081] = 0                 # AC active power output (INT32, W) — updated live
-    regs[32084] = 1000                                 # Power factor (INT16, gain 1000 → 1.000)
-    regs[32085] = 5000                                 # Grid frequency (UINT16, Hz×100 → 50.00 Hz)
-    regs[32089] = 2                                    # Running state: 0x0002 = grid-connected normally
+    # --- Identity strings (captured 1:1 from the real EMMA-A02) ---
+    for i, val in enumerate(_str_to_regs("SmartHEMS", 15)):
+        regs[EMMA_REG_OFFERING_NAME + i] = val            # 30000-30014
+    for i, val in enumerate(_str_to_regs("BT24B0106206", 10)):
+        regs[EMMA_REG_SN + i] = val                       # 30015-30024
+    for i, val in enumerate(_str_to_regs("SmartHEMS V100R025C00SPC131", 15)):
+        regs[EMMA_REG_SOFTWARE_VER + i] = val             # 30035-30049
+    for i, val in enumerate(_str_to_regs("EMMA-A02", 20)):
+        regs[EMMA_REG_MODEL + i] = val                    # 30222-30241
 
-    # Smart meter data registers [MAP0 spec §3.1 #261-281]
-    regs[37100] = 1                                    # Meter status: 1=normal
-    regs[37101] = 0;   regs[37102] = 2300             # Phase A grid voltage (INT32, V×10 → 230.0V)
-    regs[37103] = 0;   regs[37104] = 2300             # Phase B grid voltage
-    regs[37105] = 0;   regs[37106] = 2300             # Phase C grid voltage
-    for addr in range(37107, 37113):
-        regs[addr] = 0                                 # Phase A/B/C currents (INT32, A×100)
-    regs[37113] = 0;   regs[37114] = 0                # Grid active power (INT32, W) — updated live
-    regs[37115] = 0;   regs[37116] = 0                # Reactive power (INT32, Var)
-    regs[37117] = 1000                                 # Power factor (INT16, gain 1000 → 1.000)
-    regs[37118] = 5000                                 # Grid frequency (INT16, Hz×100 → 50.00 Hz)
-    regs[37119] = 0;   regs[37120] = 0                # Positive active energy (exported, INT32, kWh×100)
-    regs[37121] = 0;   regs[37122] = 0                # Reverse active energy (imported, INT32, kWh×100)
-    regs[37123] = 0;   regs[37124] = 0                # Cumulative reactive energy
-    regs[37125] = 1                                    # Meter type: 1=three-phase DTSU666-H
-    for addr in range(37132, 37138):
-        regs[addr] = 0                                 # Phase A/B/C active power (INT32, W)
+    # --- Static / nameplate values ---
+    _put_u32(EMMA_REG_INV_RATED_POWER, rated_power_kw * 1000)   # W
+    _put_u32(EMMA_REG_RATED_ESS_CAPACITY, 20700)               # 20.700 kWh (×1000)
+    _put_u32(EMMA_REG_ESS_CHG_CAP, 20700)
+    _put_u32(EMMA_REG_ESS_DIS_CAP, 20700)
+    regs[EMMA_REG_NUM_INVERTERS] = 1
+    regs[EMMA_REG_NUM_CHARGERS] = 0
+    regs[EMMA_REG_DEVICE_CONN_STATUS] = 0xB001                # observed on real EMMA
 
-    # Battery unit 1 registers [MAP0 spec §3.2]
-    regs[37000] = 2                                    # Storage running status: 2=running
-    regs[37001] = 0;   regs[37002] = 0                # Storage unit 1 power (INT32, W) — updated live
-    regs[37003] = 7940                                 # Battery bus voltage (confirmed from real inverter)
-    regs[37004] = 0                                    # Storage unit 1 SoC (% × 10) — updated live
-    regs[37046] = 0;   regs[37047] = 5000             # Max charge power (UINT32, W) → 5000W
-    regs[37048] = 0;   regs[37049] = 5000             # Max discharge power (UINT32, W) → 5000W
-    regs[37758] = 0;   regs[37759] = 20700            # Combined ESU max power (UINT32, W)
-    regs[37760] = 0                                    # Combined ESU SOC (UINT16, % × 10) — updated live
-    regs[37762] = 2                                    # ESU running status: 2=running
-    regs[37765] = 0;   regs[37766] = 0                # Combined ESU charge/discharge power (INT32, W)
-
-    # Battery unit 2 registers (not installed)
-    regs[37738] = 0                                    # Battery unit 2 SOC (0=not present)
-    regs[37741] = 0                                    # Battery unit 2 running status (0=offline)
-    regs[37743] = 0;   regs[37744] = 0                # Battery unit 2 charge/discharge power (INT32)
-    regs[47107] = 1                                    # Battery unit 1 — confirmed from real inverter
-    regs[47108] = 0                                    # Battery unit 2 — 0=not installed
-
-    # SunSpec header + model 1 (Common) + model 103 (Three-phase inverter) + end marker
-    for addr in range(40000, 40124):
-        regs[addr] = 0
-    regs[40000] = 0x5375;  regs[40001] = 0x6E53      # "SunS" identifier
-    regs[40002] = 1;        regs[40003] = 66           # Model 1, len=66
-    regs[40070] = 103;      regs[40071] = 50           # Model 103, len=50
-    regs[40085] = 0                                    # W_SF = 0 → watts (scale ×1)
-    regs[40122] = 0xFFFF;   regs[40123] = 0           # End marker
+    # --- Live registers: pre-create at 0 so block reads never miss ---
+    for reg in (EMMA_REG_PV_POWER, EMMA_REG_LOAD_POWER, EMMA_REG_FEED_IN_POWER,
+                EMMA_REG_BATT_POWER, EMMA_REG_INV_ACTIVE_POWER,
+                EMMA_REG_ENERGY_CHARGED_TODAY, EMMA_REG_ENERGY_DISCHARGED_TODAY,
+                EMMA_REG_CONSUMPTION_TODAY, EMMA_REG_FEED_IN_TODAY,
+                EMMA_REG_SUPPLY_FROM_GRID_TODAY, EMMA_REG_INV_YIELD_TODAY,
+                EMMA_REG_INV_TOTAL_YIELD, EMMA_REG_PV_YIELD_TODAY):
+        regs[reg] = 0
+        regs[reg + 1] = 0
+    regs[EMMA_REG_SOC] = 0
+    regs[EMMA_REG_BACKUP_SOC] = 0
 
     return regs
 
@@ -230,150 +189,73 @@ class RegisterBank:
     def _set_uint16(self, addr: int, val: int):
         self._r[addr] = _pack_uint16(val)[0]
 
-    def write_diagnostic(self):
-        """Write unique fingerprint values to key registers for identification.
-
-        Extended mode is triggered by the startup delay (15s of zeros at boot).
-        By the time write_diagnostic() is called, extended mode is already established
-        and sticky — so reg[32080] and reg[30071] can hold non-zero fingerprints safely.
-
-        NOTE: Nibe treats reg[32080]=0 as "inverter offline" and hides ALL solar values
-        on its display (even battery and grid). So 32080 MUST be non-zero here.
-
-        Read the Nibe display and match the shown value to the register below:
-          30071        → 1111   (UINT16;            Nibe shows ?)
-          32016        → 3131   (PV1 voltage;       Nibe shows 313.1 V)
-          32018        → 3232   (PV2 voltage;       Nibe shows 323.2 V)
-          32064–32065  → 2222   (INT32 DC input;    Nibe shows 2.222 kW)
-          32080        → 111    (UINT16 ×10W;       Nibe "Produced power"    = 111×10W = 1110W = 1.11 kW)
-          32081        → 4444   (UINT16 W;          Nibe "Inverter capacity" = 4444/1000 = 4.444 kW)
-          37113–37114  → 5555   (INT32 grid power;  Nibe shows 5.555 kW)
-          37132–37133  → 6666   (INT32 house load;  Nibe shows 6.666 kW)
-          37760        → 777    (UINT16 SOC ×10;    Nibe shows 77.7 %)
-          37765–37766  → 8888   (INT32 batt power;  Nibe shows 8.888 kW)
-        """
-        self._set_uint16(30071, 1111)
-        self._r[HUAWEI_REG_PV1_VOLTAGE] = 3131    # 32016: PV1 voltage (313.1 V)
-        self._r[HUAWEI_REG_PV2_VOLTAGE] = 3232    # 32018: PV2 voltage (323.2 V)
-        self._set_int32(32064,  2222)
-        # Write 32080/32081 INDEPENDENTLY (not as INT32) — they are two separate UINT16 fields:
-        #   reg[32080] × 10W → "Produced power"    (expected: 111×10W = 1.11 kW on Nibe display)
-        #   reg[32081] / 1000 → "Inverter capacity" (expected: 4444/1000 = 4.444 kW on Nibe display)
-        self._r[HUAWEI_REG_ACTIVE_PWR]     = 111   # 32080: 111 × 10W = 1110W = 1.11 kW
-        self._r[HUAWEI_REG_ACTIVE_PWR + 1] = 4444  # 32081: 4444 W = 4.444 kW
-        self._set_int32(37113,  5555)
-        self._set_int32(37132,  6666)
-        self._set_uint16(37760, 777)
-        self._set_int32(37765,  8888)
-        log.info("DIAGNOSTIC: 30071=1111  32016=3131(313.1V)  32018=3232(323.2V)  32064=2222  "
-                 "32080=111(→1.11kW prod)  32081=4444(→4.444kW cap)  "
-                 "37113=5555  37132=6666  37760=777(77.7%)  37765=8888")
-
     def _set_uint32(self, addr: int, val: int):
         clamped = max(0, min(0xFFFFFFFF, val))
         self._r[addr] = (clamped >> 16) & 0xFFFF
         self._r[addr + 1] = clamped & 0xFFFF
 
-    def update(self, data: dict):
-        """Write latest values into Modbus registers.  None = keep previous."""
-        pv_w        = data.get("pv")
-        batt_w      = data.get("batt")
-        soc_pct     = data.get("soc")
-        grid_w      = data.get("grid")
-        active_pwr_w = data.get("active_pwr")
+    def write_diagnostic(self):
+        """Write recognizable fingerprint values to the live EMMA registers so each
+        Nibe display field can be matched to a register.  Disable when done."""
+        self._set_uint32(EMMA_REG_PV_POWER,        1111)   # → 1.111 kW PV
+        self._set_uint32(EMMA_REG_LOAD_POWER,      2222)   # → 2.222 kW load
+        self._set_int32(EMMA_REG_FEED_IN_POWER,    3333)   # → 3.333 kW grid
+        self._set_int32(EMMA_REG_BATT_POWER,       4444)   # → 4.444 kW battery
+        self._set_int32(EMMA_REG_INV_ACTIVE_POWER, 5555)   # → 5.555 kW inverter
+        self._set_uint16(EMMA_REG_SOC,             6666)   # → 66.66 % SOC
+        log.info("DIAGNOSTIC EMMA: PV=1111W(30354) load=2222W(30356) grid=3333W(30358) "
+                 "batt=4444W(30360) inv=5555W(30364) soc=66.66%(30368)")
 
-        # House consumption: active_power (AC output) ± grid (positive=export, negative=import)
-        #   house = active_power − grid_export  (or + grid_import)
-        active_pwr_for_house = active_pwr_w if active_pwr_w is not None else pv_w
-        house_load: Optional[int] = None
-        if None not in (active_pwr_for_house, grid_w):
-            house_load = max(0, int(round(active_pwr_for_house - grid_w)))
-        elif data.get("load") is not None:
-            house_load = max(0, int(round(data["load"])))
+    def update(self, data: dict):
+        """Write latest values into EMMA Modbus registers.  None = keep previous."""
+        pv_w         = data.get("pv")
+        batt_w       = data.get("batt")
+        soc_pct      = data.get("soc")
+        grid_w       = data.get("grid")
+        active_pwr_w = data.get("active_pwr")
+        load_w       = data.get("load")
 
         if pv_w is not None:
-            v = int(round(pv_w))
-            v16 = max(0, min(0xFFFF, v))
-            self._set_int32(HUAWEI_REG_DC_INPUT, v)          # 32064: total DC input [MAP0 #135]
-            # MAP0 spec: reg[32080-32081] is INT32, unit=W. Nibe also reads this pair as
-            # INT32 inside the large addr=32016 count=118 block → "Capacity" = INT32/1000 kW.
-            # Writing reg[32080]=pv_w//10 (old UINT16 encoding) caused the high word to be
-            # non-zero, producing absurd Capacity values (e.g. 1114 kW when pv=170 W).
-            # Correct encoding: _set_int32 → reg[32080]=0 (hi), reg[32081]=pv_w (lo).
-            # "Produced power" on the Nibe display is driven by reg[30071]=pv_w (written below).
-            self._set_int32(HUAWEI_REG_ACTIVE_PWR, v)          # 32080(hi=0)+32081(lo=v); INT32/1000=pv_kW
-            self._set_uint16(SUNSPEC_M103_W, v16)             # 40084: SunSpec Model 103 W
-            self._set_uint16(NIBE_REG_PV_POWER, v16)          # 30071: legacy compat
+            self._set_uint32(EMMA_REG_PV_POWER, max(0, int(round(pv_w))))
+
+        # House load: prefer the configured load_power sensor; otherwise derive from
+        # the energy balance house = pv − batt − grid (correct for all sign combos).
+        if load_w is not None:
+            self._set_uint32(EMMA_REG_LOAD_POWER, max(0, int(round(load_w))))
+        elif None not in (pv_w, batt_w, grid_w):
+            self._set_uint32(EMMA_REG_LOAD_POWER,
+                             max(0, int(round(pv_w - batt_w - grid_w))))
 
         if grid_w is not None:
-            self._set_int32(HUAWEI_REG_GRID_POWER, int(round(grid_w)))
-
-        if soc_pct is not None:
-            self._set_uint16(HUAWEI_REG_BATT_SOC, int(round(soc_pct * 10)))
-            self._set_uint16(HUAWEI_REG_STORAGE_SOC, int(round(soc_pct * 10)))
+            self._set_int32(EMMA_REG_FEED_IN_POWER, int(round(grid_w)))   # +export/−import
 
         if batt_w is not None:
-            self._set_int32(HUAWEI_REG_BATT_POWER, int(round(batt_w)))
-            self._set_int32(HUAWEI_REG_STORAGE_POWER, int(round(batt_w)))
+            self._set_int32(EMMA_REG_BATT_POWER, int(round(batt_w)))      # +charge/−discharge
 
-        batt_max_chg = data.get("batt_max_chg")
-        if batt_max_chg is not None:
-            self._set_uint32(NIBE_REG_BATT_MAX_CHG, int(round(batt_max_chg)))  # 37046, UINT32
-        batt_max_dis = data.get("batt_max_dis")
-        if batt_max_dis is not None:
-            self._set_uint32(NIBE_REG_BATT_MAX_DIS, int(round(batt_max_dis)))  # 37048, UINT32
+        # Inverter active power: prefer the configured sensor; else approximate as
+        # AC output = pv − battery_charge.
+        if active_pwr_w is not None:
+            self._set_int32(EMMA_REG_INV_ACTIVE_POWER, int(round(active_pwr_w)))
+        elif None not in (pv_w, batt_w):
+            self._set_int32(EMMA_REG_INV_ACTIVE_POWER, int(round(pv_w - batt_w)))
 
-        # Nibe reads reg[32106-32107] as UINT32/100 and displays it as "Consumption kW".
-        # Scale: house_load W // 10 → stored as 10W units → /100 = kW on display.
-        # Example: 5240W // 10 = 524 → 524/100 = 5.24 kW shown as "Consumption".
-        # reg[37132] is also written as INT32 W for other Nibe internal use.
-        if house_load is not None:
-            self._set_uint32(HUAWEI_REG_TOTAL_YIELD, max(0, house_load // 10))  # 32106: Consumption display
-            self._set_int32(37132, house_load)
+        if soc_pct is not None:
+            self._set_uint16(EMMA_REG_SOC, int(round(soc_pct * 100)))     # % × 100
 
-        # PV string DC voltages — MBSA V1: 32016=VPV-1, 32018=VPV-2 (gain 10 → e.g. 350.5V → 3505)
-        for key, reg in [("pv1_v", HUAWEI_REG_PV1_VOLTAGE), ("pv2_v", HUAWEI_REG_PV2_VOLTAGE)]:
+        # Energy counters (kWh × 100)
+        for key, reg in [
+            ("daily_kwh",  EMMA_REG_INV_YIELD_TODAY),
+            ("total_kwh",  EMMA_REG_INV_TOTAL_YIELD),
+            ("export_kwh", EMMA_REG_FEED_IN_TODAY),
+            ("import_kwh", EMMA_REG_SUPPLY_FROM_GRID_TODAY),
+        ]:
             v = data.get(key)
             if v is not None:
-                self._set_uint16(reg, int(round(v * 10)))
-
-        # Energy counters (UINT32, gain 100 → e.g. 123.45 kWh → 12345)
-        daily = data.get("daily_kwh")
-        if daily is not None:
-            self._set_uint32(HUAWEI_REG_DAILY_YIELD, int(round(daily * 100)))
-
-        # total_kwh (total lifetime yield) intentionally NOT written to reg[32106]
-        # because Nibe uses that register for "Consumption" display (house load).
-        # total_kwh sensor can remain configured but is unused in register writes.
-
-        export_kwh = data.get("export_kwh")
-        if export_kwh is not None:
-            self._set_int32(HUAWEI_REG_GRID_EXPORT, int(round(export_kwh * 100)))
-
-        import_kwh = data.get("import_kwh")
-        if import_kwh is not None:
-            self._set_uint32(HUAWEI_REG_GRID_IMPORT, int(round(import_kwh * 100)))
-
-        # Temperature (INT16, gain 10 → e.g. 35.2°C → 352)
-        temp = data.get("temp")
-        if temp is not None:
-            self._set_uint16(HUAWEI_REG_TEMPERATURE, int(round(temp * 10)) & 0xFFFF)
-
-        # Power factor (INT16, gain 1000 → e.g. 0.95 → 950)
-        pf = data.get("pf")
-        if pf is not None and abs(pf) >= 0.5:
-            # Only update if sensor returns a plausible inverter power factor (≥0.5).
-            # Values like 0.03 indicate a unit mismatch or bad sensor — skip and keep
-            # the default 1000 (1.000) from build_register_dict, otherwise Nibe
-            # rejects all inverter data and shows 0 production.
-            self._set_uint16(HUAWEI_REG_POWER_FACTOR, min(1000, int(round(abs(pf) * 1000))))
-
-        # Grid frequency: hardcode 50.00 Hz (UINT16, gain 100 → 5000)
-        self._set_uint16(HUAWEI_REG_GRID_FREQ, 5000)
+                self._set_uint32(reg, max(0, int(round(v * 100))))
 
         log.debug(
-            f"RegisterBank updated: pv={pv_w} grid={grid_w} soc={soc_pct} batt={batt_w} "
-            f"daily={daily}"
+            f"RegisterBank(EMMA) updated: pv={pv_w} load={load_w} grid={grid_w} "
+            f"batt={batt_w} soc={soc_pct} active={active_pwr_w}"
         )
 
 
@@ -481,7 +363,7 @@ class NibeHuaweiBridge:
         self._interval: int = opts.get("update_interval", 30)
 
         s = opts.get("sensors", {})
-        self._sensor_pv   = s.get("pv_power",      "sensor.emma_pv_output_power")
+        self._sensor_pv   = s.get("pv_power",      "sensor.inverter_input_power")
         self._sensor_soc  = s.get("battery_soc",   "sensor.emma_state_of_capacity")
         self._sensor_batt = s.get("battery_power", "sensor.emma_battery_charge_discharge_power")
         self._sensor_grid = s.get("grid_power",    "sensor.emma_feed_in_power")
@@ -495,12 +377,6 @@ class NibeHuaweiBridge:
             "total_kwh":    "total_yield_kwh",
             "export_kwh":   "grid_export_today_kwh",
             "import_kwh":   "grid_import_today_kwh",
-            "temp":         "inverter_temp",
-            "pf":           "power_factor",
-            "pv1_v":        "pv1_voltage",
-            "pv2_v":        "pv2_voltage",
-            "batt_max_chg": "battery_max_charge_power",
-            "batt_max_dis": "battery_max_discharge_power",
         }
         for key, cfg_name in opt_map.items():
             entity_id = s.get(cfg_name, "")
@@ -556,9 +432,11 @@ class NibeHuaweiBridge:
 
     @staticmethod
     def _calc_surplus(data: dict) -> float:
+        # grid_power convention (emma_feed_in_power): + = export, − = import.
+        # Surplus available to divert = exported power = grid.
         grid = data.get("grid")
         if grid is not None:
-            return -grid
+            return grid
         return data.get("pv") or 0.0
 
     # ------------------------------------------------------------------
@@ -642,19 +520,8 @@ class NibeHuaweiBridge:
             log.info(f"    Hysteréza:        {self._hysteresis} cyklov")
         log.info("=" * 60)
 
-        # Startup delay — keep all registers at 0 for 15 seconds so Nibe S1255 can
-        # connect and read the standby state (reg[32080]=[0,0] AND reg[30071]=0).
-        # This triggers extended polling mode, which is sticky for the session.
-        # Run the zero-hold whenever the Modbus server is active — including test
-        # mode. Test mode still serves Nibe over Modbus, and skipping the standby
-        # state meant Nibe never entered extended polling mode, so battery and
-        # smart-meter registers were never read (only PV showed up). v2.6.39.
-        if self._bank is not None:
-            STARTUP_DELAY = 15
-            log.info(f"Startup delay: {STARTUP_DELAY}s — all registers at 0, "
-                     "waiting for Nibe to enter extended polling mode...")
-            await asyncio.sleep(STARTUP_DELAY)
-            log.info("Startup delay done, starting normal polling loop.")
+        # NOTE: the EMMA emulation needs no startup zero-hold (that was a SUN2000
+        # "extended polling mode" trick); registers serve live values immediately.
 
         async with aiohttp.ClientSession() as session:
             while True:
@@ -775,8 +642,18 @@ async def run_mitm_proxy(listen_host: str, listen_port: int,
 # Custom Modbus TCP server (replaces pymodbus ModbusTcpServer)
 # ---------------------------------------------------------------------------
 
-# Registers logged at INFO level so polling activity is always visible
-_INFO_REGS = {30071, 32016, 32064, 32065, 32080, 32081, 37113, 37114, 37132, 37133, 37760, 37765, 37766}
+# EMMA registers logged at INFO level so we can see exactly what Nibe polls.
+#   30000/30015/30035/30222 → device identification strings
+#   30354/30356/30358/30360 → PV / load / grid / battery power
+#   30364/30368             → inverter active power / SOC
+#   30330/30336/30342/30344 → energy counters
+_INFO_REGS = {
+    30000, 30015, 30035, 30222,                    # identity strings
+    30354, 30356, 30358, 30360,                    # PV / load / grid / battery
+    30362, 30364, 30368, 30373,                    # rated / active / SOC / backup SOC
+    30330, 30336, 30342, 30344, 30346,             # energy counters
+    30801, 30804,                                  # device counts
+}
 
 
 class SimpleModbusTcpServer:
@@ -863,6 +740,8 @@ class SimpleModbusTcpServer:
 
         if fc == 0x03:
             return self._fc3(tid, proto, unit, pdu)
+        if fc == 0x2B:
+            return self._fc43(tid, proto, unit, pdu)
 
         log.info(f"Unsupported FC={fc:#04x} from Nibe, sending IllegalFunction exception")
         return self._exception(tid, proto, unit, fc, 0x01)  # Illegal Function
@@ -896,6 +775,54 @@ class SimpleModbusTcpServer:
         data = b"".join(struct.pack(">H", r & 0xFFFF) for r in regs)
         resp_pdu = bytes([0x03, len(data)]) + data
         return struct.pack(">HHH", tid, proto, 1 + len(resp_pdu)) + bytes([unit]) + resp_pdu
+
+    # FC 0x2B / MEI 0x0E — Read Device Identification.  This is how Nibe (and
+    # wlcrs/huawei-solar-lib) recognizes a device as an EMMA: vendor "Huawei",
+    # product code "HEMS", and the extended device descriptor with key 8=HEMS.
+    # Values captured 1:1 from the real EMMA-A02.
+    _ID_BASIC = [
+        (0x00, b"Huawei"),
+        (0x01, b"HEMS"),
+        (0x02, b"V100R025C00SPC131"),
+    ]
+    _ID_DEVLIST = [
+        (0x87, bytes([1])),  # number of devices (we expose just the EMMA itself)
+        (0x88, b"1=EMMA-A02;2=V100R025C00SPC131;3=P1.15-D1.0;"
+               b"4=BT24B0106206;5=0;6=1.0;8=HEMS;9=0"),
+    ]
+
+    def _fc43(self, tid: int, proto: int, unit: int, pdu: bytes) -> bytes:
+        if len(pdu) < 4 or pdu[1] != 0x0E:
+            return self._exception(tid, proto, unit, 0x2B, 0x01)  # Illegal Function
+        code = pdu[2]
+        obj_id = pdu[3]
+        log.info(f"Nibe FC43 ReadDeviceId code={code} obj={obj_id:#04x}")
+
+        more = 0x00
+        next_id = 0x00
+        if code == 0x01:                              # basic — stream vendor/product/version
+            objs = self._ID_BASIC
+            conformity = 0x81
+        elif code in (0x02, 0x03):                    # regular/extended — device list, stream from obj_id
+            chain = self._ID_DEVLIST
+            idx = next((i for i, (oid, _) in enumerate(chain) if oid == obj_id), None)
+            if idx is None:
+                single = dict(self._ID_BASIC).get(obj_id)
+                if single is None:
+                    return self._exception(tid, proto, unit, 0x2B, 0x02)  # Illegal Data Address
+                objs = [(obj_id, single)]
+            else:
+                objs = [chain[idx]]
+                if idx + 1 < len(chain):
+                    more, next_id = 0xFF, chain[idx + 1][0]
+            conformity = 0x83
+        else:
+            return self._exception(tid, proto, unit, 0x2B, 0x01)
+
+        body = bytes([0x2B, 0x0E, code, conformity, more, next_id, len(objs)])
+        for oid, val in objs:
+            body += bytes([oid, len(val)]) + val
+        return struct.pack(">HHH", tid, proto, 1 + len(body)) + bytes([unit]) + body
 
     @staticmethod
     def _exception(tid: int, proto: int, unit: int, fc: int, code: int) -> bytes:
