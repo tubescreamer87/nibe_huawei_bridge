@@ -219,15 +219,20 @@ class RegisterBank:
             self._set_uint32(EMMA_REG_PV_POWER, max(0, int(round(pv_w))))
 
         # House load: prefer the configured load_power sensor; otherwise derive from
-        # the energy balance house = pv − batt − grid (correct for all sign combos).
+        # the energy balance.  Conventions on this system (confirmed against the live
+        # EMMA + HA sensors): grid (emma_feed_in_power) + = import, battery + = charge.
+        #   house = pv − batt + grid_import
         if load_w is not None:
             self._set_uint32(EMMA_REG_LOAD_POWER, max(0, int(round(load_w))))
         elif None not in (pv_w, batt_w, grid_w):
             self._set_uint32(EMMA_REG_LOAD_POWER,
-                             max(0, int(round(pv_w - batt_w - grid_w))))
+                             max(0, int(round(pv_w - batt_w + grid_w))))
 
+        # reg 30358: a real EMMA reports this + = import / − = export (verified by
+        # live capture: +12 W while importing 12 W).  emma_feed_in_power uses the same
+        # sign, so write it through unchanged → Nibe sees authentic EMMA values.
         if grid_w is not None:
-            self._set_int32(EMMA_REG_FEED_IN_POWER, int(round(grid_w)))   # +export/−import
+            self._set_int32(EMMA_REG_FEED_IN_POWER, int(round(grid_w)))   # +import/−export
 
         if batt_w is not None:
             self._set_int32(EMMA_REG_BATT_POWER, int(round(batt_w)))      # +charge/−discharge
@@ -432,11 +437,11 @@ class NibeHuaweiBridge:
 
     @staticmethod
     def _calc_surplus(data: dict) -> float:
-        # grid_power convention (emma_feed_in_power): + = export, − = import.
-        # Surplus available to divert = exported power = grid.
+        # grid_power convention (emma_feed_in_power on this system): + = import,
+        # − = export.  Surplus available to divert = exported power = −grid.
         grid = data.get("grid")
         if grid is not None:
-            return grid
+            return -grid
         return data.get("pv") or 0.0
 
     # ------------------------------------------------------------------

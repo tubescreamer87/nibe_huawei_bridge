@@ -1,6 +1,6 @@
 name: "Nibe-Huawei Bridge"
 description: "Emuluje Huawei EMMA (SmartHEMS) cez Modbus TCP – Nibe S1255 sa pripojí priamo a číta FV/batériové dáta"
-version: "2.7.0"
+version: "2.7.1"
 slug: "nibe_huawei_bridge"
 init: false
 hassio_api: true
@@ -52,7 +52,7 @@ options:
     pv_power: 0          # W – simulated PV production
     battery_soc: 80      # % – simulated battery state of charge
     battery_power: -500  # W – positive=charging, negative=discharging
-    grid_power: 200      # W – positive=export, negative=import
+    grid_power: -1000    # W – positive=import, negative=export (negative ⇒ surplus)
   # MITM proxy – transparentne preposiela Modbus TCP od Nibe na skutočnú EMMA a loguje registre
   mitm_mode:
     enabled: false
