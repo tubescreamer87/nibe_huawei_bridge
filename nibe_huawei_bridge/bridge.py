@@ -74,6 +74,10 @@ EMMA_REG_INV_YIELD_TODAY         = 30342  # U32 — inverter energy yield today
 EMMA_REG_INV_TOTAL_YIELD         = 30344  # U32 — inverter total energy yield
 EMMA_REG_PV_YIELD_TODAY          = 30346  # U32 — PV yield today
 
+# Built-in electric energy sensor (the EMMA's own grid meter)
+EMMA_REG_METER_ACTIVE_POWER = 31657  # I32, W — grid active power (+ = import / − = export).
+                                     # Nibe reads THIS (not 30358) for grid-flow + house calc.
+
 # Device management
 EMMA_REG_NUM_INVERTERS = 30801  # U16
 EMMA_REG_NUM_CHARGERS  = 30804  # U16
@@ -164,6 +168,7 @@ def build_register_dict(rated_power_kw: int = 10) -> dict:
     # --- Live registers: pre-create at 0 so block reads never miss ---
     for reg in (EMMA_REG_PV_POWER, EMMA_REG_LOAD_POWER, EMMA_REG_FEED_IN_POWER,
                 EMMA_REG_BATT_POWER, EMMA_REG_INV_ACTIVE_POWER,
+                EMMA_REG_METER_ACTIVE_POWER,
                 EMMA_REG_ENERGY_CHARGED_TODAY, EMMA_REG_ENERGY_DISCHARGED_TODAY,
                 EMMA_REG_CONSUMPTION_TODAY, EMMA_REG_FEED_IN_TODAY,
                 EMMA_REG_SUPPLY_FROM_GRID_TODAY, EMMA_REG_INV_YIELD_TODAY,
@@ -228,11 +233,14 @@ class RegisterBank:
             self._set_uint32(EMMA_REG_LOAD_POWER,
                              max(0, int(round(pv_w - batt_w + grid_w))))
 
-        # reg 30358: a real EMMA reports this + = import / − = export (verified by
-        # live capture: +12 W while importing 12 W).  emma_feed_in_power uses the same
-        # sign, so write it through unchanged → Nibe sees authentic EMMA values.
+        # Grid power (+ = import / − = export on this system, verified against the live
+        # EMMA).  Two registers carry it, both same value/sign:
+        #   30358 feed-in power, and 31657 built-in-meter active power.
+        # Nibe reads 31657 for the grid-flow display + house calc, so it MUST be set.
         if grid_w is not None:
-            self._set_int32(EMMA_REG_FEED_IN_POWER, int(round(grid_w)))   # +import/−export
+            g = int(round(grid_w))
+            self._set_int32(EMMA_REG_FEED_IN_POWER, g)
+            self._set_int32(EMMA_REG_METER_ACTIVE_POWER, g)
 
         if batt_w is not None:
             self._set_int32(EMMA_REG_BATT_POWER, int(round(batt_w)))      # +charge/−discharge
@@ -658,6 +666,7 @@ _INFO_REGS = {
     30362, 30364, 30368, 30373,                    # rated / active / SOC / backup SOC
     30330, 30336, 30342, 30344, 30346,             # energy counters
     30801, 30804,                                  # device counts
+    31657,                                         # built-in meter active power (grid)
 }
 
 
